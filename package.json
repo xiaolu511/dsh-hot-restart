@@ -1,7 +1,7 @@
 {
   "name": "dsh-hot-restart",
   "version": "0.3.2",
-  "description": "DSH 热重启：在主区域左下角固定一个按钮，点一下就重启 DSH（关闭并自动重新打开）",
+  "description": "DSH 热重启：窗口里一个固定按钮，点一下就把 DSH 关掉并自动重开，全程没有黑窗口",
   "keywords": [
     "dsh",
     "dsh-plugin",

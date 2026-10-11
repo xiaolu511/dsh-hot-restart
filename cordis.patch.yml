@@ -1,13 +1,13 @@
 # ============================================================================
 # dsh-hot-restart —— DSH bundle patch
 # ============================================================================
-# 这是插件的「挂载声明」：DSH 启动时按 bundle 层栈叠加各插件 patch，
+# 这是插件的挂载声明：DSH 启动时按 bundle 层栈叠加各插件 patch，
 # 本文件把 dsh-hot-restart 这个条目插入当前 profile 的配置树。
 #
-# 安装（当前 profile 内）：
-#   dsh plugin add file:<打包后的 tgz 路径>
-# 或本地目录开发安装：
-#   dsh plugin add link:<本目录绝对路径>
+# 安装：桌面客户端让 Agent 执行 plugin_manager 的 install_bundle，
+# spec 写 dsh-hot-restart 或 github:xiaolu511/dsh-hot-restart；
+# web profile 走 CLI：dsh plugin --profile web add dsh-hot-restart
+# 详见 README。
 # ============================================================================
 
 - insert:
