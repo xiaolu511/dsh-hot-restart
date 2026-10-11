@@ -1,5 +1,11 @@
 # dsh-hot-restart · DSH 热重启
 
+[![npm version](https://img.shields.io/npm/v/dsh-hot-restart)](https://www.npmjs.com/package/dsh-hot-restart)
+[![license](https://img.shields.io/npm/l/dsh-hot-restart)](LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](package.json)
+
+[中文](README.md) | [English](README.en.md) | [小白向指南](小白向指南.md)
+
 在 DSH 窗口里放一个固定的按钮，点一下就把 DSH 关掉并自动重开。
 
 - 按钮固定不动，浮在页面上，不会挤压正文；
@@ -65,8 +71,8 @@ dsh plugin --profile web add dsh-hot-restart
 ## 它是怎么重启的
 
 1. 页面请求 `POST /dsh-hot-restart/restart`，带上 `x-dsh-hot-restart: 1` 头；
-2. 宿主半区先定位外壳进程：自己的父进程必须同名可执行文件，而且不是 `--type=` 子进程，
-   否则直接拒绝，绝不去杀终端里的 `dsh web`；
+2. 宿主半区先定位外壳进程，看的是自己的父进程：不能是 Electron 的 `--type=` 子进程，不能是终端或解释器，
+   并且 exe 名字得像 DSH 应用，否则直接拒绝，绝不去杀终端里的 `dsh web`；
 3. 用 WMI 派发 `wscript.exe //B lib\relaunch.vbs`。wscript 是 GUI 子系统程序，不创建控制台；
    WMI 创建的进程脱离 DSH 的 Job，能活到外壳退出之后；
 4. 宿主回包给页面，700ms 后 `taskkill /F` 终结外壳进程；

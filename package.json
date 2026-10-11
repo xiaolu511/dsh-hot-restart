@@ -16,6 +16,8 @@
     "tools",
     "cordis.patch.yml",
     "README.md",
+    "README.en.md",
+    "小白向指南.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
