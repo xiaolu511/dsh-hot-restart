@@ -17,26 +17,6 @@
 > 外壳也没有任何插件扩展点或 IPC 让插件加项——所以插件无法往原生托盘菜单里加东西，
 > 入口只能放在页面内。原生托盘菜单要加项必须改外壳（重打包 `app.asar`，官方更新后失效）。
 
-## 那个黑窗口是怎么回事（v0.3.0 已修）
-
-旧版助手用 `powershell.exe -WindowStyle Hidden` 拉起 DSH，结果出现一个黑色终端窗口，关掉它 DSH 就死。
-根因有两层：
-
-1. `powershell.exe` 是**控制台程序**。Win11 把控制台交给 **Windows Terminal** 托管，
-   即使加 `-WindowStyle Hidden`，终端窗口依然会出现（实测：进程创建后立刻多出一个
-   `WindowsTerminal` 窗口，标题就是 powershell 的路径）——就是你截图里那个窗口。
-2. 助手用 `Start-Process` 启动 DSH，**新 DSH 继承了那个控制台**。于是关掉窗口 =
-   给控制台里所有进程发关闭事件 = DSH 立刻退出。
-
-现在的做法（每一层都验证过）：
-
-- 助手改成 **`lib/relaunch.vbs`**，用 **`wscript.exe`** 派发——`wscript.exe` 是 **GUI 子系统程序，
-  完全不创建控制台**（实测 6/6 次无窗口）；
-- 助手用 **WMI `Win32_Process.Create`** 拉起 DSH：父进程是 `WmiPrvSE`，**不继承任何控制台**，
-  同时天然脱离 DSH 的 Windows Job（这也是「外壳一死、Job 内进程被收走」这个坑的解法）；
-- WMI 创建偶发返回非 0，助手与宿主各有**重试**；PowerShell 助手只作为极老系统上的兜底，
-  且它现在也用 WMI 拉起 DSH。
-
 ## 安装
 
 桌面客户端读的是 `desktop` profile，而 CLI 按设计**不允许** `--profile desktop`，所以用内置插件管理器：
