@@ -1,6 +1,6 @@
 # dsh-hot-restart · DSH 热重启
 
-在 DSH 窗口里放一个固定的按钮，点一下就把 DSH 关掉并自动重开，全程不出现任何黑窗口。
+在 DSH 窗口里放一个固定的按钮，点一下就把 DSH 关掉并自动重开。
 
 - 按钮固定不动，浮在页面上，不会挤压正文；
 - 实心主题色加白字「热重启 DSH」，一眼能看见；
@@ -17,7 +17,7 @@
 
 ## 安装
 
-已发布到 npm，装这一个就行，插件页里也能按名字搜到：
+已发布到 npm:
 
 ```
 dsh-hot-restart
@@ -37,7 +37,7 @@ github:xiaolu511/dsh-hot-restart
 dsh plugin --profile web add dsh-hot-restart
 ```
 
-### 装完要手动重启一次 DSH，只有这一次
+### 装完要手动重启一次 DSH
 
 两个原因，都得靠一次真实的进程重启解决：
 
@@ -46,12 +46,10 @@ dsh plugin --profile web add dsh-hot-restart
 2. **宿主侧代码按模块 URL 缓存**，热装热更不会替换已经在跑的模块，所以 `lib/index.js` 的改动
    要等下一次宿主启动才生效。插件管理器也会把这类安装标成 `restart-required`。
 
-重启方式二选一，都不会出现窗口：
+重启方式二选一：
 
 - 双击 `tools\restart-dsh.vbs`，推荐；
 - 托盘图标右键「退出」，再正常打开 DSH。
-
-> ⚠️ 那次重启之前先别点页面里的按钮：运行中的宿主还是旧模块，点它会复现黑窗口。
 
 ## 用法
 
