@@ -14,15 +14,6 @@
 - 重开之后页面会弹一条「DSH 已热重启完成」。
 
 每个版本的改动见 [CHANGELOG.md](CHANGELOG.md)。
-
-按钮位置是 `左侧 = 侧边栏宽度 + 16px`、`距底 14px`，读的是 DSH 自己发布的 CSS 变量
-`--dsh-windows-sidebar-width`，窗口缩放会跟着走。故意放左边，因为右下角被小鲸鱼挂件整块占着。
-
-> **为什么不在系统托盘的右键菜单里**：那个菜单由 DSH 的 Electron 外壳写死在
-> `app.asar/lib/main.js` 的 `DesktopTray.relabel` 里，宿主侧的插件拿不到 Electron API，
-> 外壳也没留任何扩展点，所以插件加不了项，入口只能放在页面内。
-> 要进原生托盘菜单必须重打包 `app.asar`，官方更新后失效。
-
 ## 安装
 
 已发布到 npm:
