@@ -150,6 +150,13 @@ async function call(path, options) {
   // 测试进程不是被 dsh-desktop-host 拉起的 → 必须 fail-closed
   assert.equal(payload.canRestart, false, 'fail-closed outside the desktop host')
   assert.equal(payload.reason, 'not-desktop-host')
+  // 用户回报「无法热重启」时要能拿到识别细节，所以 status 必须带 detect 块
+  assert.ok(payload.detect && typeof payload.detect === 'object', 'status carries detection details')
+  assert.equal(payload.detect.hostPid, process.pid, 'detect reports the host pid')
+  assert.ok(payload.detect.hostExe, 'detect reports the host executable')
+  for (const key of ['parentPid', 'parentName', 'parentExe', 'parentCommand']) {
+    assert.ok(key in payload.detect, `detect exposes ${key}`)
+  }
 }
 
 // 重启助手必须「零控制台窗口」：wscript(GUI) 派发 VBS，且由 WMI 拉起 DSH
