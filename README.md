@@ -19,16 +19,29 @@
 
 ## 安装
 
-桌面客户端读的是 `desktop` profile，而 CLI 按设计**不允许** `--profile desktop`，所以用内置插件管理器：
+> 本包**没有发布到 npm**，所以插件页里按名字搜不到。三种装法任选：
 
-- 让 Agent 执行 `plugin_manager` → `install_bundle`，spec 用打包好的 tgz：
-  `file:../../plugins/dsh-hot-restart-0.3.1.tgz`（tgz 在 `%USERPROFILE%\.dsh\plugins\`）
-- 或从本地目录安装（link，路径不能移动/删除）：spec 用 `link:<你的克隆目录>\dsh-hot-restart`
+**① 从 GitHub 直接装（给别人用最省事）**
 
-非桌面形态（`web` profile）才走 CLI：
+spec 用 GitHub 地址即可，插件管理器会先 `git ls-remote` 检查，再交给 pnpm：
+
+```
+github:xiaolu511/dsh-hot-restart
+```
+
+**② 用打包好的 tgz**
+
+把 `dsh-hot-restart-<版本>.tgz` 拷到目标机器，spec 用 `file:<tgz 绝对路径>`。
+
+**③ 本地目录（开发用，link 安装，路径不能移动/删除）**
+
+spec 用 `link:<你的克隆目录>\dsh-hot-restart`。
+
+桌面客户端读的是 `desktop` profile，而 CLI 按设计**不允许** `--profile desktop`，所以上面几种都用内置插件管理器
+（让 Agent 执行 `plugin_manager` → `install_bundle`）。非桌面形态（`web` profile）才走 CLI：
 
 ```bash
-dsh plugin --profile web add file:C:\Users\<你>\.dsh\plugins\dsh-hot-restart-0.3.1.tgz
+dsh plugin --profile web add github:xiaolu511/dsh-hot-restart
 ```
 
 ### 升级 / 首次安装后要手动重启一次 DSH（只有这一次）
