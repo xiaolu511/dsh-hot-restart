@@ -163,6 +163,14 @@ async function call(path, options) {
   for (const key of ['parentPid', 'parentName', 'parentExe', 'parentCommand']) {
     assert.ok(key in payload.detect, `detect exposes ${key}`)
   }
+  // 「装完没重启」是最容易让人误会的情况：磁盘版本与运行中的模块版本要分别报出来
+  assert.equal(typeof payload.runningVersion, 'string', 'status reports the running host module version')
+  assert.ok(payload.runningVersion.length > 0, 'running host version is not empty')
+  assert.equal(
+    payload.restartRequired,
+    String(payload.version) !== String(payload.runningVersion),
+    'restartRequired is derived from installed vs running',
+  )
 }
 
 // 重启助手必须「零控制台窗口」：wscript(GUI) 派发 VBS，且由 WMI 拉起 DSH
