@@ -15,17 +15,6 @@ One fixed button inside the DSH window. Click it and DSH closes and reopens auto
 
 Release notes for every version live in [CHANGELOG.md](CHANGELOG.md). There is also a
 [beginner guide](小白向指南.md), in Chinese.
-
-The button sits at `left = sidebar width + 16px` and `bottom = 14px`. It reads DSH's own CSS
-variable `--dsh-windows-sidebar-width`, so it follows window resizing. It is deliberately on the
-left, because the bottom-right corner is occupied by the whale widget.
-
-> **Why not the tray context menu**: that menu is hard-coded by the DSH Electron shell in
-> `app.asar/lib/main.js`, inside `DesktopTray.relabel`. A host-side plugin has no access to the
-> Electron API and the shell exposes no extension point, so plugin entries cannot be added there.
-> The entry has to live inside the page. Putting it in the native tray menu would require
-> repacking `app.asar`, which official updates overwrite.
-
 ## Install
 
 Published on npm:
