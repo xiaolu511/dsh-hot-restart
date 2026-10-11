@@ -1,0 +1,4 @@
+# 统一换行，避免 Windows 上 LF/CRLF 反复抖动
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf

@@ -1,0 +1,17 @@
+# 打包产物 / 日志
+*.tgz
+*.log
+
+# 依赖
+node_modules/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 本机运行时状态（不该进仓库）
+hot-restart/
+last-restart.json
