@@ -18,6 +18,15 @@
     "README.md",
     "LICENSE"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiaolu511/dsh-hot-restart.git"
+  },
+  "homepage": "https://github.com/xiaolu511/dsh-hot-restart#readme",
+  "bugs": {
+    "url": "https://github.com/xiaolu511/dsh-hot-restart/issues"
+  },
+  "author": "xiaolu511",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -25,6 +34,10 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "license": "MIT"
 }
