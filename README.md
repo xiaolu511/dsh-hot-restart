@@ -19,32 +19,21 @@
 
 ## 安装
 
-四种装法任选，**推荐 ①**（已发布到 npm：不需要 git、不需要代理，插件页里也能按名字搜到）：
-
-**① 从 npm 装**
+已发布到 npm，装这一个就行，插件页里也能按名字搜到：
 
 ```
 dsh-hot-restart
 ```
 
-**② 从 GitHub 装**（需要目标机器装了 `git`）
-
-插件管理器会先 `git ls-remote` 检查，再交给 pnpm：
+装不上就换 GitHub 地址，目标机器需要有 git：
 
 ```
 github:xiaolu511/dsh-hot-restart
 ```
 
-**③ 用打包好的 tgz**（离线 / 无 git 环境最稳）
+离线环境可以用打包好的 tgz，spec 写 `file:` 加上 tgz 的绝对路径。
 
-把 `dsh-hot-restart-<版本>.tgz` 拷到目标机器，spec 用 `file:<tgz 绝对路径>`。
-
-**④ 本地目录**（开发用，link 安装，路径不能移动/删除）
-
-spec 用 `link:<你的克隆目录>\dsh-hot-restart`。
-
-桌面客户端读的是 `desktop` profile，而 CLI 按设计**不允许** `--profile desktop`，所以上面几种都用内置插件管理器
-（让 Agent 执行 `plugin_manager` → `install_bundle`）。非桌面形态（`web` profile）才走 CLI：
+桌面客户端让 Agent 执行 `plugin_manager` 的 `install_bundle` 即可。`web` profile 走 CLI：
 
 ```bash
 dsh plugin --profile web add dsh-hot-restart
