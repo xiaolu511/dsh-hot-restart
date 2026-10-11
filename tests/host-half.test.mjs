@@ -147,13 +147,19 @@ async function call(path, options) {
   assert.equal(payload.ok, true)
   assert.equal(payload.port, 19387)
   assert.equal(payload.hostPid, process.pid)
-  // 测试进程不是被 dsh-desktop-host 拉起的 → 必须 fail-closed
+  // 测试进程不是被 DSH 桌面壳拉起的 → 必须 fail-closed。
+  // 具体原因随环境而变（parent-unknown / parent-unrecognized / parent-is-console…），
+  // 这里只要求「拒绝 + 给出非空原因」，别再写死某个原因码。
   assert.equal(payload.canRestart, false, 'fail-closed outside the desktop host')
-  assert.equal(payload.reason, 'not-desktop-host')
+  assert.equal(typeof payload.reason, 'string')
+  assert.ok(payload.reason.length > 0, 'refusal carries a reason code')
+  assert.notEqual(payload.reason, 'desktop-shell', 'never claims a shell it cannot verify')
   // 用户回报「无法热重启」时要能拿到识别细节，所以 status 必须带 detect 块
   assert.ok(payload.detect && typeof payload.detect === 'object', 'status carries detection details')
   assert.equal(payload.detect.hostPid, process.pid, 'detect reports the host pid')
   assert.ok(payload.detect.hostExe, 'detect reports the host executable')
+  assert.ok(typeof payload.detect.hostArgv === 'string' && payload.detect.hostArgv.length > 0, 'detect reports host argv')
+  assert.equal(typeof payload.detect.hostMarker, 'boolean', 'detect reports whether a host marker was seen')
   for (const key of ['parentPid', 'parentName', 'parentExe', 'parentCommand']) {
     assert.ok(key in payload.detect, `detect exposes ${key}`)
   }
@@ -248,6 +254,59 @@ async function call(path, options) {
     const out = String(execFileSync(ps, ['-NoProfile', '-NonInteractive', '-Command', probe], { encoding: 'utf8' })).trim()
     const decoded = Buffer.from(out, 'base64').toString('utf8')
     assert.equal(decoded, 'D:\\新建文件夹\\DeepSeek Harness.exe', 'non-ASCII path survives the PowerShell round-trip')
+  }
+}
+
+// 外壳判定规则：把每个真实用户遇到的构建写法钉成用例，别再靠猜
+{
+  const { __test } = await import(new URL('../lib/index.js', import.meta.url).href)
+  const classify = __test.classifyShellCandidate
+  const cases = [
+    // 用户 A：DSH Desktop 2.0.17，装在 D:\Tool\DSH Desktop\，宿主没有 desktop-host 标记
+    [
+      'DSH Desktop 2.0.17',
+      { name: 'DSH Desktop.exe', exe: 'D:\\Tool\\DSH Desktop\\DSH Desktop.exe', command: '"D:\\Tool\\DSH Desktop\\DSH Desktop.exe" ' },
+      { exe: 'D:\\Tool\\DSH Desktop\\DSH Desktop.exe', marker: false },
+      'desktop-shell',
+    ],
+    // 开发机：DeepSeek Harness，宿主路径与外壳同一个 exe
+    [
+      'DeepSeek Harness',
+      { name: 'DeepSeek Harness.exe', exe: 'D:\\ai\\DeepSeek Harness.exe', command: '"D:\\ai\\DeepSeek Harness.exe"' },
+      { exe: 'D:\\ai\\DeepSeek Harness.exe', marker: true },
+      'desktop-shell',
+    ],
+    // 渲染/工具进程不是外壳
+    [
+      'renderer child',
+      { name: 'DeepSeek Harness.exe', exe: 'D:\\ai\\DeepSeek Harness.exe', command: '"x.exe" --type=renderer' },
+      { exe: 'D:\\ai\\DeepSeek Harness.exe', marker: true },
+      'parent-is-child-process',
+    ],
+    // dsh web 跑在终端里：绝不能杀终端
+    [
+      'terminal host',
+      { name: 'pwsh.exe', exe: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe', command: 'pwsh -c dsh web' },
+      { exe: 'C:\\node\\node.exe', marker: false },
+      'parent-is-console',
+    ],
+    // 手工用 node 起宿主：不能把 node 当外壳
+    [
+      'manual node host',
+      { name: 'node.exe', exe: 'C:\\node\\node.exe', command: 'node dsh/lib/bin.js' },
+      { exe: 'C:\\node\\node.exe', marker: false },
+      'parent-is-console',
+    ],
+    // 名字完全不像 DSH，又没有标记：拒绝
+    [
+      'unknown gui parent',
+      { name: 'unknown.exe', exe: 'C:\\x\\unknown.exe', command: '"C:\\x\\unknown.exe"' },
+      { exe: 'C:\\y\\host.exe', marker: false },
+      'parent-unrecognized',
+    ],
+  ]
+  for (const [label, parent, host, expected] of cases) {
+    assert.equal(classify(parent, host), expected, `shell verdict for ${label}`)
   }
 }
 
