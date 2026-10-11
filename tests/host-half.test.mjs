@@ -224,6 +224,33 @@ async function call(path, options) {
   assert.match(payload.error, /不是由桌面壳托管|desktop/, 'explains why')
 }
 
+// 中文路径必须活下来：PowerShell 输出要强制 UTF-8，父进程查询走 base64 往返。
+// 起因：有用户把 DSH 装在 D:\新建文件夹\ 下，路径被控制台代码页弄坏成乱码，
+// 宿主拿乱码去 existsSync 判定失败，报 shell-exe-missing。
+{
+  const source = await readFile(new URL('../lib/index.js', import.meta.url), 'utf8')
+  assert.ok(
+    source.includes('[Console]::OutputEncoding=[System.Text.Encoding]::UTF8'),
+    'PowerShell stdout pinned to UTF-8',
+  )
+  assert.ok(
+    source.includes('ToBase64String([Text.Encoding]::UTF8.GetBytes($j))'),
+    'parent query returns base64 encoded UTF-8',
+  )
+  assert.ok(source.includes("exeSource = 'host-exe'"), 'falls back to the host exe path')
+
+  if (process.platform === 'win32') {
+    const { execFileSync } = await import('node:child_process')
+    const ps = `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
+    const probe = '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; '
+      + '$s = "D:\\新建文件夹\\DeepSeek Harness.exe"; '
+      + '[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($s))'
+    const out = String(execFileSync(ps, ['-NoProfile', '-NonInteractive', '-Command', probe], { encoding: 'utf8' })).trim()
+    const decoded = Buffer.from(out, 'base64').toString('utf8')
+    assert.equal(decoded, 'D:\\新建文件夹\\DeepSeek Harness.exe', 'non-ASCII path survives the PowerShell round-trip')
+  }
+}
+
 // 卸载：所有 disposer 都是函数且可安全调用
 {
   assert.ok(disposers.length > 0, 'disposers registered')
