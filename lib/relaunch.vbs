@@ -101,14 +101,18 @@ Sub KillChildren(parentPid)
 End Sub
 
 ' How many running processes are the very exe we are about to start.
+' Electron children (renderer, GPU, utility) carry --type= and are NOT a sign
+' that the app came up, so they are excluded.
 Function InstanceCount()
   Dim q, p
   InstanceCount = 0
   On Error Resume Next
-  Set q = svc.ExecQuery("SELECT ProcessId, ExecutablePath FROM Win32_Process WHERE Name='" & exeName & "'")
+  Set q = svc.ExecQuery("SELECT ProcessId, ExecutablePath, CommandLine FROM Win32_Process WHERE Name='" & exeName & "'")
   If IsObject(q) Then
     For Each p In q
-      If StrComp(CStr(p.ExecutablePath), exePath, 1) = 0 Then InstanceCount = InstanceCount + 1
+      If StrComp(CStr(p.ExecutablePath), exePath, 1) = 0 Then
+        If InStr("" & p.CommandLine, "--type=") = 0 Then InstanceCount = InstanceCount + 1
+      End If
     Next
   End If
   On Error GoTo 0

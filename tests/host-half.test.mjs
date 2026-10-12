@@ -349,6 +349,22 @@ async function call(path, options) {
   }
 }
 
+// 独立重启工具（tools/）：同样不能写死 exe 名、同样要先确认助手活着再动手
+{
+  const vbsTool = await readFile(new URL('../tools/restart-dsh.vbs', import.meta.url), 'utf8')
+  const psTool = await readFile(new URL('../tools/restart-dsh.ps1', import.meta.url), 'utf8')
+  for (const [name, text] of [['restart-dsh.vbs', vbsTool], ['restart-dsh.ps1', psTool]]) {
+    assert.ok(!/DeepSeek Harness/.test(text), `${name} must not hard-code the shell exe name`)
+    assert.match(text, /\[relaunch\]/, `${name} waits for the helper to report before killing`)
+  }
+  assert.match(vbsTool, /--check/, 'restart-dsh.vbs has a compile-only switch for tests')
+  assert.match(psTool, /\[switch\]\$Check/, 'restart-dsh.ps1 has a check-only switch for tests')
+  assert.ok(
+    vbsTool.indexOf('[relaunch]') > 0 && vbsTool.indexOf('.Terminate()') > vbsTool.indexOf('[relaunch]'),
+    'restart-dsh.vbs terminates the shell only after the helper reported',
+  )
+}
+
 // 卸载：所有 disposer 都是函数且可安全调用
 {
   assert.ok(disposers.length > 0, 'disposers registered')
