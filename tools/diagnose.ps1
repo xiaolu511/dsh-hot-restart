@@ -24,7 +24,10 @@ param(
   # 谁触发的这次自检：user-request / previous-startup-failed / restart-refused …
   # 手动双击 tools\diagnose.cmd 时不带这个参数，就是 manual —— 页面据此决定要不要
   # 弹「报告已生成」。手工测试的报告不该每次都推到用户脸上。
-  [string]$Trigger = 'manual'
+  [string]$Trigger = 'manual',
+  # 默认**不实测**五条派发通道：那要真的起脚本宿主进程，杀毒软件会拦、会弹授权窗口，
+  # 在某些机器上还要磨十几秒。加 -DeepProbe 才跑实测。
+  [switch]$DeepProbe
 )
 
 $ErrorActionPreference = 'Continue'
@@ -46,6 +49,26 @@ function Trace([string]$step) {
   } catch { }
 }
 Trace ("start pid=$PID outDir=$OutDir runspace=$($PSVersionTable.PSVersion)")
+
+# ---------------------------------------------------------------- 进度上报 ----
+# 用户点完自检到出报告有十几秒，中间必须让他看得见 —— 进度写进一个固定文件，
+# 由 tools/diagnose-progress.hta 那个小窗口读出来显示。
+# ⚠️ 编码：**UTF-16LE（-Encoding Unicode）**，窗口用 TristateTrue 读，两边必须对上。
+$script:progressFile = Join-Path $env:USERPROFILE '.dsh\hot-restart\diagnose-progress.txt'
+$script:totalSteps = 8
+function Step([int]$n, [string]$label) {
+  Say ("[{0}/{1}] {2}" -f $n, $script:totalSteps, $label)
+  # 每步都留一条带时间戳的轨迹：用户抱怨"太慢"时，靠它定位到底哪一步慢
+  Trace ("step {0}/{1} {2}" -f $n, $script:totalSteps, $label)
+  try {
+    $dir = Split-Path -Parent $script:progressFile
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    Set-Content -LiteralPath $script:progressFile -Value ("{0}|{1}|{2}" -f $n, $script:totalSteps, $label) -Encoding Unicode
+  } catch { }
+}
+function Progress-Done([string]$reportPath) {
+  try { Add-Content -LiteralPath $script:progressFile -Value ("done|" + $reportPath) -Encoding Unicode } catch { }
+}
 function Head([string]$title) {
   Line ''
   Line ('-' * 76)
@@ -71,7 +94,7 @@ Write-Host 'dsh-hot-restart 自检开始 —— 全程只读，不会关闭或�
 Write-Host ''
 
 # ---------------------------------------------------------------- 环境 ----
-Say '[1/8] 环境'
+Step 1 '环境'
 Head '一、环境'
 try {
   $os = Get-CimInstance Win32_OperatingSystem
@@ -95,7 +118,7 @@ try {
 } catch { Line "  环境采集出错: $($_.Exception.Message)" }
 
 # ---------------------------------------------------------------- DSH 进程 ----
-Say '[2/8] DSH 进程'
+Step 2 'DSH 进程'
 Head '二、DSH 进程'
 $appPattern = 'dsh|harness|deepseek'
 $procs = @()
@@ -138,7 +161,7 @@ foreach ($h in $hosts) {
 }
 
 # ---------------------------------------------------------------- 插件状态 ----
-Say '[3/8] 插件安装状态'
+Step 3 '插件安装状态'
 Head '三、插件安装状态'
 $profileDir = Join-Path $env:USERPROFILE '.dsh\profiles\desktop'
 $pluginDir = Join-Path $profileDir 'node_modules\dsh-hot-restart'
@@ -182,7 +205,7 @@ if (Test-Path $ticketPath) {
 } else { Note '重启凭据残留' '无（正常）' }
 
 # ---------------------------------------------------------------- 能力矩阵 ----
-Say '[4/8] 派发能力矩阵（关键）'
+Step 4 '派发能力矩阵（关键）'
 Trace 'matrix start'
 Head '四、派发能力矩阵'
 Line '  说明：这几条探针只创建临时目录里的一次性脚本，写个标记文件就退出，不接触 DSH。'
@@ -208,32 +231,14 @@ function Wait-Marker {
   return (Test-Path -LiteralPath $Path)
 }
 
-# 经 WMI 派发一个探针，并把三件事分开报：进程创建了没有 / 它后来还活着吗 / 脚本产出没有。
-# 分不清这三者，就会把「创建了但不干活」误判成别的毛病（第一版就吃过这个亏）。
-function Probe-ViaWmi {
-  param([string]$Label, [string]$CommandLine, [string]$Marker, [string]$Alias)
+# 经 WMI 创建进程。**只点火、不等待** —— 五条通道并行跑，省掉原来串行的二十多秒。
+function Start-ViaWmi {
+  param([string]$CommandLine)
   try {
     $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $CommandLine }
-    Note 'Win32_Process.Create 返回' ("ReturnValue={0}  pid={1}" -f $r.ReturnValue, $r.ProcessId)
-    $createdPid = [int]$r.ProcessId
-    Start-Sleep -Seconds 2
-    $aliveEarly = $null -ne (Get-Process -Id $createdPid -ErrorAction SilentlyContinue)
-    Note '创建后 2 秒进程是否还在' $(if ($aliveEarly) { '在' } else { '已经不在了' })
-    $ok = Wait-Marker $Marker $ProbeTimeoutSec
-    $aliveLate = $null -ne (Get-Process -Id $createdPid -ErrorAction SilentlyContinue)
-    Note '等待结束时进程是否还在' $(if ($aliveLate) { '在' } else { '已退出' })
-    Mark $ok $Label $(if ($ok) { '创建成功且脚本真的执行了' } else { "创建成功但脚本没产出（2 秒时进程$(if ($aliveEarly) { '还在' } else { '已消失' })）" })
-    if (-not $ok) {
-      if ($aliveEarly) {
-        Verdict "$Alias：进程被创建、也活着，但脚本从不产出 —— 像是它的运行环境（控制台/会话）没建起来"
-      } else {
-        Verdict "$Alias：进程被创建后立刻消失 —— 像是脚本宿主被安全策略挡住了"
-      }
-    }
-    return $ok
+    return @{ Fired = $true; ReturnValue = [int]$r.ReturnValue; Pid = [int]$r.ProcessId; Error = '' }
   } catch {
-    Mark $false $Label $_.Exception.Message
-    return $false
+    return @{ Fired = $false; ReturnValue = -1; Pid = 0; Error = $_.Exception.Message }
   }
 }
 
@@ -243,58 +248,195 @@ Note 'wscript.exe' $(if (Test-Path $wscriptExe) { "存在 $wscriptExe" } else { 
 Note 'powershell.exe' $(if (Test-Path $psExe) { "存在 $psExe" } else { '不存在！' })
 Note 'explorer.exe' $(if (Test-Path (Join-Path $env:SystemRoot 'explorer.exe')) { '存在' } else { '不存在！' })
 
-# 1) 直接跑 wscript
-Line ''
-Line '  ① 直接运行 wscript 脚本（用户双击时的路径）'
+# ---- 实测五条通道（默认**不跑**，只在 -DeepProbe 时跑）----
+# 每条都要真的起一个脚本宿主进程：杀软会拦、会弹授权窗口，机器上也可能磨十几秒。
+# 默认模式改成只读策略（见后面的「安全环境」一节），不起任何进程。
+if ($DeepProbe) {
+# 并行点火：串行要二十多秒，用户等到怀疑它没动 ----
+# 每条只记三件事：进程创建了没有（Started）/ 它后来还活着吗（AliveEarly, AliveLate）/ 脚本产出没有（Ok）。
+$probes = New-Object System.Collections.Generic.List[hashtable]
+
+# ① 直接跑 wscript（用户双击 / 手动救急时的路径）
 $p1 = New-Probe 'direct-wscript'
-try {
-  Start-Process -FilePath $wscriptExe -ArgumentList @('//B', $p1.Script) -Wait -WindowStyle Hidden
-  $ok = Wait-Marker $p1.Marker 3
-  Mark $ok 'wscript 直接执行' $(if ($ok) { '写出标记，正常' } else { '脚本没写出标记 —— WSH 可能被策略/杀软拦住' })
-  if (-not $ok) { Verdict 'wscript 直接执行失败：脚本宿主被拦住，插件的零窗口助手在首选路径上就跑不起来' }
-} catch { Mark $false 'wscript 直接执行' $_.Exception.Message }
+$fired1 = $true; $err1 = ''
+try { Start-Process -FilePath $wscriptExe -ArgumentList @('//B', $p1.Script) -WindowStyle Hidden | Out-Null } catch { $fired1 = $false; $err1 = $_.Exception.Message }
+$probes.Add(@{ Key='direct-wscript'; Label='wscript 直接执行'; Alias='wscript 直接执行'; Good='写出标记，正常';
+  Marker=$p1.Marker; Pid=0; Return=$null; Started=$fired1; Error=$err1 })
 
-# 2) 经 WMI 派发 wscript（插件首选路径）
-Line ''
-Line '  ② 经 WMI 创建 wscript（插件的首选派发路径，能跳出 DSH 的 Job）'
+# ② 经 WMI 创建 wscript（插件的首选派发路径）
 $p2 = New-Probe 'wmi-wscript'
-Probe-ViaWmi -Label 'WMI + wscript' -Marker $p2.Marker -Alias 'WMI + wscript' `
-  -CommandLine ('"{0}" //B "{1}"' -f $wscriptExe, $p2.Script) | Out-Null
+$r2 = Start-ViaWmi ('"{0}" //B "{1}"' -f $wscriptExe, $p2.Script)
+$probes.Add(@{ Key='wmi-wscript'; Label='WMI + wscript'; Alias='WMI + wscript'; Good='创建成功且脚本真的执行了';
+  Marker=$p2.Marker; Pid=$r2.Pid; Return=$r2; Started=$r2.Fired; Error=$r2.Error })
 
-# 3) 经 Explorer 派发（插件备用路径）
-Line ''
-Line '  ③ 经 Explorer 打开脚本（插件备用派发路径，绕开 WMI）'
+# ③ 经 Explorer 打开脚本（插件备用派发路径，绕开 WMI）
 $p3 = New-Probe 'explorer-wscript'
-try {
-  Start-Process -FilePath (Join-Path $env:SystemRoot 'explorer.exe') -ArgumentList @($p3.Script)
-  $ok = Wait-Marker $p3.Marker ($ProbeTimeoutSec + 5)
-  Mark $ok 'Explorer + wscript' $(if ($ok) { '脚本跑起来了，这条备用路可用' } else { '没产出标记，这条备用路也不通' })
-} catch { Mark $false 'Explorer + wscript' $_.Exception.Message }
+$fired3 = $true; $err3 = ''
+try { Start-Process -FilePath (Join-Path $env:SystemRoot 'explorer.exe') -ArgumentList @($p3.Script) | Out-Null } catch { $fired3 = $false; $err3 = $_.Exception.Message }
+$probes.Add(@{ Key='explorer-wscript'; Label='Explorer + wscript'; Alias='Explorer + wscript'; Good='脚本跑起来了，这条备用路可用';
+  Marker=$p3.Marker; Pid=0; Return=$null; Started=$fired3; Error=$err3 })
 
-# 4) 直接跑 PowerShell
-Line ''
-Line '  ④ 直接运行 PowerShell（兜底助手用的宿主）'
+# ④ 直接跑 PowerShell（兜底助手的宿主）
 $p4 = New-Probe 'direct-ps'
+$fired4 = $true; $err4 = ''
 try {
-  Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', ('Set-Content -LiteralPath ''' + $p4.Marker + ''' -Value ''direct-ps ok'' -Encoding ASCII')) -Wait -WindowStyle Hidden
-  $ok = Wait-Marker $p4.Marker 5
-  Mark $ok 'PowerShell 直接执行' $(if ($ok) { '正常' } else { '没写出标记 —— PowerShell 可能被策略拦住' })
-  if (-not $ok) { Verdict 'PowerShell 直接执行失败：兜底助手也用不了' }
-} catch { Mark $false 'PowerShell 直接执行' $_.Exception.Message }
+  Start-Process -FilePath $psExe -WindowStyle Hidden -ArgumentList @(
+    '-NoProfile', '-NonInteractive', '-Command',
+    ('Set-Content -LiteralPath ''' + $p4.Marker + ''' -Value ''direct-ps ok'' -Encoding ASCII')) | Out-Null
+} catch { $fired4 = $false; $err4 = $_.Exception.Message }
+$probes.Add(@{ Key='direct-ps'; Label='PowerShell 直接执行'; Alias='PowerShell 直接执行'; Good='正常';
+  Marker=$p4.Marker; Pid=0; Return=$null; Started=$fired4; Error=$err4 })
 
-# 5) 经 WMI 派发 PowerShell
-Line ''
-Line '  ⑤ 经 WMI 创建 PowerShell（兜底助手的派发方式）'
-$p5 = New-Probe 'wmi-ps'
+# ⑤ 经 WMI 创建 PowerShell（兜底助手的派发方式）
 # 用 -File 指向临时 ps1，而不是把带引号的 -Command 塞进 WMI 命令行：
-# 引号嵌套一旦写错就会得到「创建了却不干活」的假故障（本工具第一版就这么骗过我一次）。
+# 引号嵌套写错就会得到「创建了却不干活」的假故障（本工具第一版就这么骗过我一次）。
+$p5 = New-Probe 'wmi-ps'
 $p5Script = Join-Path $work 'wmi-ps-probe.ps1'
 Set-Content -LiteralPath $p5Script -Encoding ASCII -Value ("Set-Content -LiteralPath '{0}' -Value 'wmi-ps ok' -Encoding ASCII" -f $p5.Marker)
-Probe-ViaWmi -Label 'WMI + PowerShell' -Marker $p5.Marker -Alias 'WMI + PowerShell' `
-  -CommandLine ('"{0}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{1}"' -f $psExe, $p5Script) | Out-Null
+$r5 = Start-ViaWmi ('"{0}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{1}"' -f $psExe, $p5Script)
+$probes.Add(@{ Key='wmi-ps'; Label='WMI + PowerShell'; Alias='WMI + PowerShell'; Good='创建成功且脚本真的执行了';
+  Marker=$p5.Marker; Pid=$r5.Pid; Return=$r5; Started=$r5.Fired; Error=$r5.Error })
+
+# —— 一次轮询所有标记，总预算 8 秒；顺路记一次「1.5 秒时还活着吗」——
+$startedAt = Get-Date
+$deadline = $startedAt.AddSeconds(8)
+$earlyTaken = $false
+for (;;) {
+  $pending = $false
+  foreach ($probe in $probes) {
+    if (-not $probe.Ok -and (Test-Path -LiteralPath $probe.Marker)) { $probe.Ok = $true }
+    if (-not $probe.Ok) { $pending = $true }
+  }
+  $elapsed = ((Get-Date) - $startedAt).TotalSeconds
+  if (-not $earlyTaken -and $elapsed -ge 1.5) {
+    $earlyTaken = $true
+    foreach ($probe in $probes) {
+      if ($probe.Pid -gt 0) { $probe.AliveEarly = $null -ne (Get-Process -Id $probe.Pid -ErrorAction SilentlyContinue) } else { $probe.AliveEarly = $true }
+    }
+  }
+  if (-not $pending) { break }
+  if ((Get-Date) -ge $deadline) { break }
+  Start-Sleep -Milliseconds 200
+}
+foreach ($probe in $probes) {
+  if (-not $probe.Ok) { $probe.Ok = Test-Path -LiteralPath $probe.Marker }
+  if ($probe.Pid -gt 0) { $probe.AliveLate = $null -ne (Get-Process -Id $probe.Pid -ErrorAction SilentlyContinue) } else { $probe.AliveLate = $false }
+}
+
+# ---- 逐条报告（顺序与人读的顺序一致） ----
+$titles = @(
+  '① 直接运行 wscript 脚本（用户双击时的路径）',
+  '② 经 WMI 创建 wscript（插件的首选派发路径，能跳出 DSH 的 Job）',
+  '③ 经 Explorer 打开脚本（插件备用派发路径，绕开 WMI）',
+  '④ 直接运行 PowerShell（兜底助手用的宿主）',
+  '⑤ 经 WMI 创建 PowerShell（兜底助手的派发方式）'
+)
+for ($i = 0; $i -lt $probes.Count; $i++) {
+  $probe = $probes[$i]
+  Line ''
+  Line ('  ' + $titles[$i])
+  if ($probe.Return) {
+    Note 'Win32_Process.Create 返回' ("ReturnValue={0}  pid={1}" -f $probe.Return.ReturnValue, $probe.Return.Pid)
+    Note '创建后 1.5 秒进程是否还在' $(if ($probe.AliveEarly) { '在' } else { '已经不在了' })
+    Note '等待结束时进程是否还在' $(if ($probe.AliveLate) { '在' } else { '已退出' })
+  }
+  if (-not $probe.Started) {
+    Mark $false $probe.Label $probe.Error
+    Verdict ("{0}：连进程都没能创建（{1}）" -f $probe.Alias, $probe.Error)
+    continue
+  }
+  if ($probe.Ok) {
+    Mark $true $probe.Label $probe.Good
+    continue
+  }
+  if ($probe.Key -eq 'direct-ps') {
+    Mark $false $probe.Label '没写出标记 —— PowerShell 可能被策略拦住'
+    Verdict 'PowerShell 直接执行失败：兜底助手也用不了'
+  } elseif ($probe.Key -eq 'explorer-wscript') {
+    Mark $false $probe.Label '没产出标记，这条备用路也不通'
+    Verdict 'Explorer + wscript 不通：WMI 被挡时插件就没有备用派发通道了'
+  } elseif ($probe.Key -eq 'direct-wscript') {
+    Mark $false $probe.Label '脚本没写出标记 —— WSH 可能被策略/杀软拦住'
+    Verdict 'wscript 直接执行失败：脚本宿主被拦住，插件的零窗口助手在首选路径上就跑不起来'
+  } else {
+    Mark $false $probe.Label ("创建成功但脚本没产出（1.5 秒时进程" + $(if ($probe.AliveEarly) { '还在' } else { '已消失' }) + '）')
+    if ($probe.AliveEarly) {
+      Verdict ("{0}：进程被创建、也活着，但脚本从不产出 —— 像是它的运行环境（控制台/会话）没建起来" -f $probe.Alias)
+    } else {
+      Verdict ("{0}：进程被创建后立刻消失 —— 像是脚本宿主被安全策略挡住了" -f $probe.Alias)
+    }
+  }
+}
+} else {
+  Line ''
+  Line '  已跳过实测（默认模式，不创建任何进程）'
+  Line '  这么做是因为：每条探针都要真的起一个脚本宿主进程，杀毒软件会拦、会弹授权窗口，'
+  Line '  而且实测在装了杀软的机器上这一环能磨十几到二十几秒 —— 恰好是「自检很慢」的主因。'
+  Line '  想看实测结果（会起临时脚本宿主，杀软可能弹授权）就再跑一次：'
+  Line '    tools\diagnose.cmd -DeepProbe'
+  Line '  有没有被拦，看下面这一节「安全环境」和上面的 restart.log 就够判断了：'
+  Line '  日志里出现 ABORT / 「没就绪」/「创建成功但脚本没产出」，就是那台机器上派发通道被挡住了。'
+}
+
+# ---------------------------------------------------------------- 安全环境 ----
+# 上面五条探针**要真的起脚本宿主进程**：杀毒软件会拦、会弹授权窗口，用户还得点一下 ✗。
+# 实测在装了杀软的机器上这一环能磨十几到二十几秒，恰恰是"自检太慢"的主因。
+# 所以再加一节**只读的策略体检**：不起任何进程，直接把"为什么会被拦"讲清楚。
+function Show-SecurityContext {
+  Line ''
+  Line '  安全环境（只读策略，不创建任何进程）'
+
+  $wshDisabled = $null
+  foreach ($hive in @('HKLM:\SOFTWARE\Microsoft\Windows Script Host\Settings', 'HKCU:\SOFTWARE\Microsoft\Windows Script Host\Settings')) {
+    try {
+      $v = (Get-ItemProperty -Path $hive -Name Enabled -ErrorAction Stop).Enabled
+      if ($null -ne $v) { $wshDisabled = ($v -eq 0) }
+    } catch { }
+  }
+  if ($null -eq $wshDisabled) { Note 'Windows Script Host' '没有被禁用（正常）' }
+  elseif ($wshDisabled) { Note 'Windows Script Host' '被禁用！'; Verdict 'Windows Script Host 被策略禁用：插件的零窗口助手根本跑不起来' }
+  else { Note 'Windows Script Host' 'Enabled=1（正常）' }
+
+  try {
+    # 只看**生效**的那条：RemoteSigned / Unrestricted 都是 Windows 常见默认值，
+    # 拿它们报警纯属制造噪音（第一版就这么干过 ✗）。只有 AllSigned / Restricted 才值得提。
+    $effective = Get-ExecutionPolicy
+    $allScopes = (Get-ExecutionPolicy -List | ForEach-Object { "$($_.Scope)=$($_.ExecutionPolicy)" }) -join ' '
+    Note 'PowerShell 执行策略' ("生效={0}（{1}）" -f $effective, $allScopes)
+    if ("$effective" -match 'AllSigned|Restricted') { Verdict "PowerShell 生效执行策略是 $effective：未签名的脚本助手可能被拒" }
+  } catch { Note 'PowerShell 执行策略' '(读不到)' }
+
+  try {
+    $av = @(Get-CimInstance -Namespace root\SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction SilentlyContinue)
+    if ($av.Count -eq 0) { Note '安全软件' '(没登记到，可能只有 Defender 或查询被限)' }
+    foreach ($a in $av) {
+      Note '安全软件' $a.displayName
+      if ($a.displayName -and $a.displayName -notmatch 'Defender') {
+        Verdict ("装了第三方安全软件（{0}）：它拦进程创建时，助手会「创建成功但立刻消失」—— 正是 WMI 派发失败的典型样子" -f $a.displayName)
+      }
+    }
+  } catch { Note '安全软件' '(查询失败)' }
+
+  try {
+    $mp = Get-MpPreference -ErrorAction Stop
+    Note '受控文件夹访问' $(if ($mp.EnableControlledFolderAccess -eq 1) { '已开启（会拦进程创建）' } else { '关闭' })
+    if ($mp.EnableControlledFolderAccess -eq 1) { Verdict 'Defender 的受控文件夹访问开着：脚本宿主进程会「创建了但活不下来」' }
+    $asr = @($mp.AttackSurfaceReductionRules_Ids)
+    if ($asr.Count -gt 0) { Note 'ASR 规则' ("{0} 条（可能包含『阻止脚本创建进程』）" -f $asr.Count) }
+  } catch { Note 'Defender 策略' '(读不到 Get-MpPreference)' }
+
+  try {
+    $applocker = Get-AppLockerPolicy -Effective -ErrorAction Stop
+    $rules = @($applocker.RuleCollections).Count
+    Note 'AppLocker 生效策略' ("{0} 组" -f $rules)
+    if ($rules -gt 0) { Verdict '机器上有 AppLocker 生效策略：脚本宿主可能被规则挡住，值得让管理员确认' }
+  } catch { Note 'AppLocker' '(没有生效策略或读不到)' }
+}
+
+Show-SecurityContext
 
 # ---------------------------------------------------------------- 阻塞项 ----
-Say '[5/8] 启动阻塞项排查'
+Step 5 '启动阻塞项排查'
 Head '五、启动阻塞项（DSH 自身）'
 # 数据目录随构建而异：官方桌面版是 %APPDATA%\DSH Desktop，
 # 而 Electron 的 user-data-dir 也可能落在 %APPDATA%\@deepseek-ai\dsh-desktop。
@@ -421,14 +563,18 @@ foreach ($lifecycle in $lifecycleDirs) {
 }
 
 # ---------------------------------------------------------------- 端口 ----
-Say '[6/8] 端口与网络'
+Step 6 '端口与网络'
 Head '六、web 端口'
 $dshListeners = @()
 $allListen = @()
 try {
   $allListen = @(Get-CimInstance MSFT_NetTCPConnection -Namespace root\StandardCimv2 -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 2 })
+  # ⚠️ 先把所有进程查**一次**建映射，别在循环里逐个查：
+  #    每个连接查一次 WMI 要 0.2～0.3 秒，几十个连接就是十秒 —— 2026-10-12 实测整步 10 秒全耗在这。
+  $procMap = @{}
+  foreach ($proc in (Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) { $procMap[[int]$proc.ProcessId] = $proc }
   foreach ($c in $allListen) {
-    $owner = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $c.OwningProcess) -ErrorAction SilentlyContinue
+    $owner = $procMap[[int]$c.OwningProcess]
     if ($owner -and ($owner.Name -match $appPattern -or ($owner.CommandLine -and $owner.CommandLine -match 'dsh-desktop-host'))) {
       $dshListeners += [pscustomobject]@{ Port = $c.LocalPort; Pid = $c.OwningProcess; Name = $owner.Name }
     }
@@ -438,13 +584,14 @@ try {
 } catch { Line "  端口枚举出错: $($_.Exception.Message)" }
 
 # ---------------------------------------------------------------- 路由 ----
-Say '[7/8] 插件路由'
+Step 7 '插件路由'
 Head '七、插件本地路由'
 # 只探 DSH 自己监听的端口：全量扫会去连一堆无关端口，每个卡 3 秒，纯浪费。
+# ⚠️ 别再往这里写死端口（43120 那种）——写死的端口一旦没人监听，探两次就白等 4 秒，
+#    2026-10-12 实测整步 4 秒全是这么来的。
 $checkPorts = @()
 foreach ($l in $dshListeners) { if ($checkPorts -notcontains $l.Port) { $checkPorts += $l.Port } }
 if ($checkPorts -notcontains 19387) { $checkPorts += 19387 }
-if ($checkPorts -notcontains 43120) { $checkPorts += 43120 }
 foreach ($port in $checkPorts) {
   foreach ($path in @('/dsh-hot-restart/status.json', '/dsh-hot-restart/ui.js')) {
     $url = "http://127.0.0.1:$port$path"
@@ -461,7 +608,7 @@ foreach ($port in $checkPorts) {
 }
 
 # ---------------------------------------------------------------- 日志全文 ----
-Say '[8/8] 汇总并写出报告'
+Step 8 '汇总并写出报告'
 Head '八、插件完整日志 restart.log'
 if (Test-Path $logPath) {
   $logItem = Get-Item $logPath
@@ -508,6 +655,7 @@ try {
   Set-Content -LiteralPath $outFile -Value $all -Encoding UTF8
   Write-Host ''
   Write-Host "报告已写出：$outFile" -ForegroundColor Green
+  Progress-Done $outFile
 } catch {
   $outFile = Join-Path $env:TEMP ("dsh-hot-restart-诊断报告-$stamp.txt")
   Set-Content -LiteralPath $outFile -Value $all -Encoding UTF8

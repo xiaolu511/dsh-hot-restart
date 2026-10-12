@@ -11,7 +11,10 @@ title dsh-hot-restart self check
 echo.
 echo dsh-hot-restart self check - read only, nothing gets closed or restarted.
 echo.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0diagnose.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0diagnose.ps1" %*
+rem Pass-through args: -DeepProbe adds the five real dispatch probes (they start
+rem temporary script hosts, so antivirus may ask for permission - that is why the
+rem default run creates no processes at all).
 set RC=%ERRORLEVEL%
 echo.
 if not "%RC%"=="0" echo [warn] diagnose.ps1 exited with code %RC%

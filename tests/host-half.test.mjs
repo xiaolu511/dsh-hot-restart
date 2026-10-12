@@ -523,6 +523,17 @@ async function call(path, options) {
   assert.ok(!/writeFileSync\(wrapper, text, 'ascii'\)/.test(hostHalf), 'the ASCII wrapper write is gone')
   const diag = await readFile(new URL('../tools/diagnose.ps1', import.meta.url), 'utf8')
   assert.match(diag, /Get-Content \$logPath -Encoding UTF8/, 'the report reads restart.log as UTF-8')
+
+  // 自检进度 + 默认不起进程（2026-10-12：杀软会拦进程创建，探针实测能磨二十多秒）
+  assert.match(diag, /\[switch\]\$DeepProbe/, 'the five real probes are opt-in only')
+  assert.match(diag, /function Show-SecurityContext/, 'default mode explains blockers by reading policy')
+  assert.match(diag, /-Encoding Unicode/, 'progress is written as UTF-16LE (the reader must match)')
+  assert.match(hostHalf, /function readDiagnoseProgress/, 'host reads the progress file')
+  assert.match(hostHalf, /diagnoseProgress: readDiagnoseProgress\(\)/, 'status.json exposes the progress')
+  assert.match(hostHalf, /readFileSync\(file, 'utf16le'\)/, 'progress is read as UTF-16LE, matching the writer')
+  const uiSrc2 = await readFile(new URL('../lib/ui.js', import.meta.url), 'utf8')
+  assert.match(uiSrc2, /showProgressOverlay/, 'the page shows a progress overlay while checking')
+  assert.match(uiSrc2, /payload\.diagnoseProgress/, 'the page polls the progress from status.json')
 }
 
 // 卸载：所有 disposer 都是函数且可安全调用
