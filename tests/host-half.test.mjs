@@ -213,6 +213,14 @@ async function call(path, options) {
   assert.match(hostHalf, /dispatchViaExplorer/, 'host has a WMI-free dispatch fallback')
   assert.match(hostHalf, /helper dispatch \(wmi\)/, 'host logs the exact dispatched command line')
   assert.match(hostHalf, /wscript-explorer/, 'host records which dispatch route worked')
+  // 助手可能活着但写不进日志（用户报告里两种宿主都给了 PID、都没有日志行），
+  // 所以确认逻辑不能只认日志：进程还活着同样算数
+  assert.match(hostHalf, /function pidAlive/, 'host can verify a helper by its pid')
+  assert.match(hostHalf, /waitForHelper\(logFile, before, \d+, candidate\.pid\)/, 'dispatch paths check the helper pid')
+  assert.ok(
+    !/readFileSync\(logFile, 'utf8'\)\.slice/.test(hostHalf),
+    'log growth is sliced by bytes, never by UTF-16 string offsets',
+  )
   assert.match(vbs, /KillChildren/, 'helper also stops leftover children of the shell')
   assert.match(vbs, /Function PortOwner/, 'helper can find whatever still holds the web port')
   assert.match(vbs, /Function IsOurStack/, 'helper only stops processes that belong to our own stack')
