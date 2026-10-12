@@ -94,11 +94,12 @@ assert.deepEqual(
   [...routes.keys()].sort(),
   [
     '/dsh-hot-restart/diagnose',
+    '/dsh-hot-restart/diagnose/cancel',
     '/dsh-hot-restart/restart',
     '/dsh-hot-restart/status.json',
     '/dsh-hot-restart/ui.js',
   ],
-  'four exact routes registered (self check included)',
+  'five exact routes registered (self check + cancel included)',
 )
 assert.ok(typeof tapIndex === 'function', 'tapIndex also installed (browser form)')
 {
@@ -211,7 +212,11 @@ async function call(path, options) {
   //   ③ 只有确认助手活着之后才允许动手。
   assert.match(hostHalf, /function closeShell/, 'host closes the shell through closeShell')
   assert.match(hostHalf, /'\/PID'/, 'graceful close without /F comes first')
-  assert.ok(!/'\/T'/.test(hostHalf), 'never kills the whole tree: that breaks DSH state locks')
+  // 关 DSH 这条路上**绝不能有 /T**：整棵树一起收会打断它写状态，留下市场锁。
+  // （取消自检那条路可以用 /T —— 收的是自检自己的进程树，所以这里按函数切开检查。）
+  const shellFn = hostHalf.slice(hostHalf.indexOf('async function closeShell'), hostHalf.indexOf('// —— 自检'))
+  assert.ok(shellFn.length > 200, 'closeShell body was located')
+  assert.ok(!/'\/T'/.test(shellFn), 'closeShell never kills the whole tree: that is what broke a DSH install')
   assert.ok(
     hostHalf.indexOf("run(['/PID'") < hostHalf.indexOf("run(['/F', '/PID'"),
     'forced kill is only the fallback after a graceful close',
@@ -532,7 +537,14 @@ async function call(path, options) {
   assert.match(hostHalf, /diagnoseProgress: readDiagnoseProgress\(\)/, 'status.json exposes the progress')
   assert.match(hostHalf, /readFileSync\(file, 'utf16le'\)/, 'progress is read as UTF-16LE, matching the writer')
   const uiSrc2 = await readFile(new URL('../lib/ui.js', import.meta.url), 'utf8')
-  assert.match(uiSrc2, /showProgressOverlay/, 'the page shows a progress overlay while checking')
+  assert.match(hostHalf, /function cancelDiagnostics/, 'the host can cancel a running self check')
+  assert.match(hostHalf, /taskkill', \['\/F', '\/T', '\/PID'/, 'cancel kills the diagnostic process tree (not DSH)')
+  const cardFn = uiSrc2.slice(uiSrc2.indexOf('function showProgressCard'), uiSrc2.indexOf('function updateProgressCard'))
+  assert.ok(cardFn.length > 200, 'the progress card builder was located')
+  assert.ok(!cardFn.includes('dsh-hr-overlay'), 'the self-check progress is a corner card, not a full-screen overlay')
+  assert.match(uiSrc2, /取消自检/, 'the card has a cancel button')
+  assert.match(uiSrc2, /自检好像被拦住了/, 'a stuck run says so instead of spinning forever')
+  assert.match(uiSrc2, /diagnose\/cancel/, 'the cancel button calls the host route')
   assert.match(uiSrc2, /payload\.diagnoseProgress/, 'the page polls the progress from status.json')
 }
 
