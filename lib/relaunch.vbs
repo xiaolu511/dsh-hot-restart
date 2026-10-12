@@ -28,8 +28,8 @@
 ' ============================================================================
 Option Explicit
 
-Dim shellPid, exePath, logPath, portNo, ticket
-Dim fso, svc, sh, workDir, waited, ok, owner
+Dim shellPid, exePath, logPath, portNo, ticket, created
+Dim fso, svc, sh, workDir, waited, ok, owner, rp
 Dim exeName, msgFail
 
 Set fso = CreateObject("Scripting.FileSystemObject")
@@ -49,6 +49,11 @@ portNo = CLng(WScript.Arguments(3))
 ' their DSH install on 2026-10-12.
 ticket = ""
 If WScript.Arguments.Count >= 5 Then ticket = "" & WScript.Arguments(4)
+' Optional 7th argument: when the shell was created (WMI datetime). Windows reuses
+' PID values, so this is how we make sure the process we are about to stop really
+' is the shell we were asked to restart, and not some unrelated program.
+created = ""
+If WScript.Arguments.Count >= 7 Then created = "" & WScript.Arguments(6)
 workDir = fso.GetParentFolderName(exePath)
 exeName = fso.GetFileName(exePath)
 
@@ -94,6 +99,45 @@ Sub TerminatePid(pid, why)
   On Error GoTo 0
 End Sub
 
+' Windows reuses PID values. Before stopping anything we check that the process
+' still is what we think it is: same executable as the shell, and - when the host
+' told us - the same creation time. Otherwise we leave it alone and say so.
+Function Digits(text)
+  Dim i, ch, out
+  out = ""
+  For i = 1 To Len(text)
+    ch = Mid(text, i, 1)
+    If ch >= "0" And ch <= "9" Then out = out & ch
+  Next
+  Digits = out
+End Function
+
+Function Identified(pid)
+  Dim q, p, wantCreated, gotCreated
+  Identified = False
+  If pid <= 0 Then Exit Function
+  On Error Resume Next
+  Set q = svc.ExecQuery("SELECT ExecutablePath, CreationDate FROM Win32_Process WHERE ProcessId=" & pid)
+  If IsObject(q) Then
+    For Each p In q
+      If StrComp(CStr(p.ExecutablePath), exePath, 1) <> 0 Then
+        WriteLog "identity check failed for pid=" & pid & ": exe is " & CStr(p.ExecutablePath)
+        Exit Function
+      End If
+      If created <> "" Then
+        wantCreated = Left(Digits(created), 14)
+        gotCreated = Left(Digits(CStr(p.CreationDate)), 14)
+        If wantCreated <> "" And gotCreated <> "" And wantCreated <> gotCreated Then
+          WriteLog "identity check failed for pid=" & pid & ": created " & gotCreated & " but expected " & wantCreated
+          Exit Function
+        End If
+      End If
+      Identified = True
+    Next
+  End If
+  On Error GoTo 0
+End Function
+
 Sub KillChildren(parentPid)
   Dim q, p
   On Error Resume Next
@@ -120,6 +164,60 @@ Function TicketOk()
   End If
   On Error GoTo 0
 End Function
+
+' When the relaunch fails there is nobody left to ask for help: DSH is gone and
+' the user just sees nothing. So the helper itself starts the self check, which
+' writes a report to the Desktop and opens it in Notepad.
+Sub RunDiagnostics()
+  Dim script, psExe
+  On Error Resume Next
+  script = fso.BuildPath(fso.GetParentFolderName(fso.GetParentFolderName(WScript.ScriptFullName)), "tools\diagnose.ps1")
+  If Not fso.FileExists(script) Then
+    WriteLog "diagnostics skipped: " & script & " not found"
+    Exit Sub
+  End If
+  psExe = sh.ExpandEnvironmentStrings("%SystemRoot%") & "\System32\WindowsPowerShell\v1.0\powershell.exe"
+  If Not fso.FileExists(psExe) Then
+    WriteLog "diagnostics skipped: powershell.exe not found"
+    Exit Sub
+  End If
+  WriteLog "starting diagnostics: " & script
+  sh.Run """" & psExe & """ -NoProfile -ExecutionPolicy Bypass -File """ & script & """", 1, False
+  If Err.Number <> 0 Then WriteLog "diagnostics launch failed: " & Err.Number & " " & Err.Description
+  On Error GoTo 0
+End Sub
+
+' The self check writes the report path into last-report.txt next to our log.
+' Wait for it so the message box can name the exact file instead of saying
+' "look on your Desktop somewhere".
+Function ReportPath(timeoutMs)
+  Dim pointer, f, stream, waited2
+  ReportPath = ""
+  On Error Resume Next
+  pointer = fso.BuildPath(fso.GetParentFolderName(logPath), "last-report.txt")
+  waited2 = 0
+  Do While waited2 < timeoutMs
+    If fso.FileExists(pointer) Then
+      Set f = fso.GetFile(pointer)
+      If DateDiff("s", f.DateLastModified, Now) < 600 Then
+        Set stream = fso.OpenTextFile(pointer, 1)
+        ReportPath = Trim(stream.ReadAll())
+        stream.Close
+      End If
+    End If
+    If ReportPath <> "" Then Exit Function
+    WScript.Sleep 1000
+    waited2 = waited2 + 1000
+  Loop
+  On Error GoTo 0
+End Function
+
+Sub ReportAndTell()
+  RunDiagnostics
+  rp = ReportPath(60000)
+  If rp = "" Then rp = "(report is being written to the Desktop)"
+  MsgBox msgFail & vbCrLf & vbCrLf & "Report: " & rp, 48, "dsh-hot-restart"
+End Sub
 
 ' How many running processes are the very exe we are about to start.
 ' Electron children (renderer, GPU, utility) carry --type= and are NOT a sign
@@ -236,9 +334,12 @@ If Not fso.FileExists(exePath) Then
   WScript.Quit 2
 End If
 
-' 1) normal path: the host half already asked the shell to close
+' 1) normal path: the host half already asked the shell to close.
+'    The host tries WM_CLOSE for 5 seconds and then force-kills, so 10 seconds of
+'    patience here is plenty. This used to be 25 seconds, and when the host's own
+'    kill silently failed (taskkill /PID undefined) every restart took ~56 seconds.
 waited = 0
-Do While Alive(shellPid) And waited < 25000
+Do While Alive(shellPid) And waited < 10000
   WScript.Sleep 250
   waited = waited + 250
 Loop
@@ -260,7 +361,13 @@ On Error GoTo 0
 ' 2) fallback: the host never got to close it, or the close failed.
 '    Children are stopped too: the host half holds the web port, and a leftover
 '    host makes the new instance exit immediately with a bind error.
+'    Identity is checked first: if the PID has been reused by something else in the
+'    meantime, this "still alive" reading is about an unrelated process.
 If Alive(shellPid) Then
+  If Not Identified(shellPid) Then
+    WriteLog "ABORT: pid=" & shellPid & " is not the shell we were asked to restart; leaving it alone"
+    WScript.Quit 7
+  End If
   WriteLog "shell still alive; forcing termination from the helper"
   TerminatePid shellPid, "shell"
   KillChildren shellPid
@@ -312,7 +419,16 @@ If ok Then WriteLog "launch issued"
 ' 5) verify it really came up, then fall back to other launch methods
 If WaitForInstance(20000) Then
   WriteLog "new instance is up: " & InstanceCount()
-  WScript.Quit 0
+  ' It came up - but does it stay up? An instance that dies right after start is
+  ' exactly the "DSH closed and never came back" case users hit.
+  WScript.Sleep 12000
+  If InstanceCount() > 0 Then
+    WriteLog "instance still alive after 12s"
+    WScript.Quit 0
+  End If
+  WriteLog "instance disappeared within 12s of starting"
+  ReportAndTell
+  WScript.Quit 6
 End If
 WriteLog "not up yet; trying ShellExecute fallback"
 On Error Resume Next
@@ -332,5 +448,5 @@ If WaitForInstance(15000) Then
 End If
 
 WriteLog "FAILED: could not start DSH automatically"
-MsgBox msgFail, 48, "dsh-hot-restart"
+ReportAndTell
 WScript.Quit 4

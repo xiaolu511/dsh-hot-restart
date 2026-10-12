@@ -15,10 +15,33 @@ param(
   [Parameter(Mandatory = $true)][string]$ExePath,
   [string]$LogPath = "",
   [int]$Port = 0,
-  [string]$Ticket = ""
+  [string]$Ticket = "",
+  [string]$Created = ""
 )
 
 $ErrorActionPreference = "Continue"
+
+# Windows reuses PID values: make sure the process we are about to stop still is the
+# shell we were asked to restart - same executable, and same creation time when known.
+function Test-Identified([int]$ProcessId) {
+  try {
+    $p = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $ProcessId) -ErrorAction Stop
+    if (-not $p) { return $false }
+    if ($p.ExecutablePath -and ($p.ExecutablePath.ToLower() -ne $ExePath.ToLower())) {
+      Write-Log ("identity check failed for pid={0}: exe is {1}" -f $ProcessId, $p.ExecutablePath)
+      return $false
+    }
+    if ($Created -ne "") {
+      $want = ($Created -replace '\D', '')
+      $got = (Get-Date $p.CreationDate).ToString('yyyyMMddHHmmss')
+      if ($want.Length -ge 14 -and $got -ne $want.Substring(0, 14)) {
+        Write-Log ("identity check failed for pid={0}: created {1} but expected {2}" -f $ProcessId, $got, $want.Substring(0, 14))
+        return $false
+      }
+    }
+    return $true
+  } catch { return $false }
+}
 
 # The host writes a ticket right before dispatching this helper and deletes it when
 # it gives up. A missing or stale ticket means the restart was cancelled: do nothing.
@@ -85,8 +108,10 @@ if (-not (Test-Path -LiteralPath $ExePath)) {
   exit 2
 }
 
-# 1) normal path: the plugin already asked the shell to terminate
-$gone = Wait-Gone $ShellPid 25
+# 1) normal path: the plugin already asked the shell to terminate.
+#    The plugin tries WM_CLOSE for 5 seconds and then force-kills, so 10 seconds here
+#    is plenty (it used to be 25, which made every restart feel like a minute).
+$gone = Wait-Gone $ShellPid 10
 Write-Log ("shell gone after wait: {0}" -f $gone)
 
 function Stop-Children([int]$ParentPid) {
@@ -145,6 +170,10 @@ if ($Ticket -ne "") {
 
 # 2) fallback: the plugin never got to close it (or the close failed)
 if (-not $gone) {
+  if (-not (Test-Identified $ShellPid)) {
+    Write-Log ("ABORT: pid={0} is not the shell we were asked to restart; leaving it alone" -f $ShellPid)
+    exit 7
+  }
   Write-Log "shell still alive; forcing termination from the helper"
   try { Stop-Process -Id $ShellPid -Force -ErrorAction Stop } catch { Write-Log ("force stop failed: {0}" -f $_.Exception.Message) }
   $gone = Wait-Gone $ShellPid 15

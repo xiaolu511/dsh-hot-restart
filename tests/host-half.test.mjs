@@ -89,8 +89,13 @@ assert.ok(injectRowListener, 'index-inject listener registered synchronously in 
 // —— ② 路由 ------------------------------------------------------------------
 assert.deepEqual(
   [...routes.keys()].sort(),
-  ['/dsh-hot-restart/restart', '/dsh-hot-restart/status.json', '/dsh-hot-restart/ui.js'],
-  'three exact routes registered',
+  [
+    '/dsh-hot-restart/diagnose',
+    '/dsh-hot-restart/restart',
+    '/dsh-hot-restart/status.json',
+    '/dsh-hot-restart/ui.js',
+  ],
+  'four exact routes registered (self check included)',
 )
 assert.ok(typeof tapIndex === 'function', 'tapIndex also installed (browser form)')
 {
@@ -229,8 +234,36 @@ async function call(path, options) {
   // 不经过 WMI 的备用派发：借已经跑着的 Explorer 打开包装脚本，跳出 DSH 的 Job。
   // 起因：某用户机器上 WMI 能建进程、助手手动跑也正常，两者合起来却没动静。
   assert.match(hostHalf, /dispatchViaExplorer/, 'host has a WMI-free dispatch fallback')
-  assert.match(hostHalf, /helper dispatch \(wmi\)/, 'host logs the exact dispatched command line')
+  assert.match(hostHalf, /dispatch \(wmi\)/, 'host logs the exact dispatched command line')
   assert.match(hostHalf, /wscript-explorer/, 'host records which dispatch route worked')
+  // 自检派发的契约（2026-10-12 实测确认）：管道 stdio + 隐藏窗口 + 不 detached，
+  // 并且在 1.5 秒内盯着它别立刻死掉 —— 早期用 stdio:'ignore' + detached 会一行都不执行。
+  assert.match(hostHalf, /stdio: \['ignore', 'pipe', 'pipe'\]/, 'the self check is spawned with pipes')
+  assert.ok(
+    !/spawn\(POWERSHELL, \['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script\], \{\s*detached: true/.test(hostHalf),
+    'the self check is not detached any more',
+  )
+  assert.match(hostHalf, /diagnostics exited immediately with code/, 'an instant exit is reported, not hidden')
+  assert.ok(!/CreateTextFile\([^)]*\)\.WriteLine/.test(hostHalf), 'no VBScript method chaining in generated wrappers')
+
+  // 2026-10-12：每次重启 56 秒 + 每次都弹报告提示。三条根因各一个断言。
+  assert.match(hostHalf, /closeShell\(shell\)/, 'closeShell gets the whole shell object (it needs exePath to verify)')
+  assert.ok(!/closeShell\(shell\.shellPid\)/.test(hostHalf), 'never pass a bare pid: that logged taskkill /PID undefined')
+  assert.match(hostHalf, /'-Trigger', String\(trigger\)/, 'the self check records who triggered it')
+  assert.match(hostHalf, /trigger: lines\[1\] \|\| 'manual'/, 'status.json exposes the report trigger')
+  const uiSrc = await readFile(new URL('../lib/ui.js', import.meta.url), 'utf8')
+  assert.match(uiSrc, /SHOWN_KEY/, 'a report is announced once only, across page loads')
+  assert.match(uiSrc, /report\.trigger === 'manual'/, 'a manually run report is not pushed at the user')
+  assert.match(vbs, /waited < 10000/, 'the helper only waits 10s for the host-side close')
+
+  // 2026-10-12 主人提的三条：冷却 5 秒、冷却不跑自检、被拒之后必须撤掉遮罩
+  assert.match(hostHalf, /const COOLDOWN_MS = 5000/, 'the cooldown is 5 seconds')
+  assert.match(hostHalf, /error\.reason = 'cooldown'/, 'a cooldown refusal is marked as such')
+  assert.match(hostHalf, /reason: \(error && error\.reason\) \|\| 'refused'/, 'the refusal response carries the reason')
+  assert.match(uiSrc, /function hideOverlay/, 'the overlay can be taken down')
+  assert.match(uiSrc, /reason === 'cooldown'/, 'a cooldown refusal gets a light dialog instead of a fault report')
+  assert.match(uiSrc, /hideOverlay\(\)\s*\r?\n\s*renderButton\(\)/, 'a refused restart always removes the overlay')
+  assert.match(uiSrc, /refused\.reason = /, 'the page keeps the refusal reason code')
   // 助手可能活着但写不进日志（用户报告里两种宿主都给了 PID、都没有日志行），
   // 所以确认逻辑不能只认日志：进程还活着同样算数
   assert.match(hostHalf, /function pidAlive/, 'host can verify a helper by its pid')
@@ -275,10 +308,28 @@ async function call(path, options) {
   assert.ok(res.body.includes('dsh-hr-btn'), 'ui.js carries the single-button markup')
   assert.ok(res.body.includes('position:fixed'), 'button is pinned (fixed), not laid out in the flow')
   assert.ok(!res.body.includes('pointermove'), 'no drag handling left in the client half')
-  assert.ok(!res.body.includes('dsh-hr-menu'), 'no context menu left in the client half')
+  // 右键菜单回来了，但只放排查入口（自检 / 复制诊断 / 版本），不放「仅重载页面」那种旧功能
+  assert.ok(res.body.includes('dsh-hr-menu'), 'the right-click menu ships with the client half')
+  assert.ok(res.body.includes('自检并生成诊断报告'), 'menu carries the self check entry')
+  assert.ok(!res.body.includes('仅重载'), 'the old reload-page entry stays gone')
   // 深色模式：brand token 在深色下是浅色，必须有自己的深蓝填充，否则白底白字
   assert.ok(res.body.includes('body[data-ds-dark-theme] #dsh-hr-btn'), 'button has a dark-theme fill override')
   assert.ok(res.body.includes('#1e3a8a'), 'dark fill is deep blue')
+}
+
+// diagnose 路由：护栏与 restart 一致（这里只验拒绝路径，避免测试里真的启动自检）
+{
+  const getRes = await call('/dsh-hot-restart/diagnose', { method: 'GET' })
+  assert.equal(getRes.statusCode, 405, 'GET rejected')
+
+  const noHeader = await call('/dsh-hot-restart/diagnose', { method: 'POST' })
+  assert.equal(noHeader.statusCode, 403, 'missing x-dsh-hot-restart rejected')
+
+  const crossSite = await call('/dsh-hot-restart/diagnose', {
+    method: 'POST',
+    headers: { host: '127.0.0.1:19387', 'x-dsh-hot-restart': '1', 'sec-fetch-site': 'cross-site' },
+  })
+  assert.equal(crossSite.statusCode, 403, 'cross-site rejected')
 }
 
 // restart 路由：方法 / 自定义头 / 非桌面壳一律拒绝，且不会真的去杀进程
@@ -397,6 +448,61 @@ async function call(path, options) {
   )
   assert.match(vbsTool, /taskkill \/F \/PID/, 'restart-dsh.vbs falls back to a forced close only if needed')
   assert.ok(!/\.Terminate\(\)/.test(vbsTool), 'restart-dsh.vbs never hard-terminates through WMI any more')
+}
+
+// 自检系统：右键菜单入口 + 失败时自动跑 + 助手在起不来时也跑
+{
+  const hostHalf = await readFile(new URL('../lib/index.js', import.meta.url), 'utf8')
+  const ui = await readFile(new URL('../lib/ui.js', import.meta.url), 'utf8')
+  const vbs = await readFile(new URL('../lib/relaunch.vbs', import.meta.url), 'utf8')
+
+  assert.match(hostHalf, /function runDiagnostics/, 'host can start the self check')
+  assert.match(hostHalf, /function failedStartupSignature/, 'host knows when the previous startup failed')
+  assert.match(hostHalf, /claimAutoDiagnose/, 'auto diagnostics runs once per failure, not on every boot')
+  assert.ok(
+    hostHalf.indexOf("path: `${BASE}/diagnose`") > 0,
+    'self check has its own route',
+  )
+  assert.match(hostHalf, /previous-startup-failed/, 'a failed previous startup triggers the self check')
+
+  assert.match(ui, /addEventListener\('contextmenu'/, 'right-clicking the button opens a menu')
+  assert.match(ui, /自检并生成诊断报告/, 'the menu offers the self check')
+  assert.match(ui, /function runSelfCheck/, 'the page can ask the host for a self check')
+  assert.match(ui, /autoDiagnose\('restart-refused'\)/, 'a refused restart runs the self check automatically')
+  assert.match(ui, /autoDiagnose\('button-blocked'\)/, 'clicking a blocked button runs the self check too')
+
+  assert.match(vbs, /Sub RunDiagnostics/, 'the helper starts the self check when DSH does not come back')
+  assert.match(vbs, /instance disappeared within 12s/, 'the helper also catches an instance that dies right after start')
+
+  // 报告位置必须明确告诉用户：脚本写 last-report.txt → 宿主读它 → 页面显示完整路径
+  assert.match(hostHalf, /function readLastReport/, 'host reads the report pointer file')
+  assert.match(hostHalf, /lastDiagnoseReport/, 'status.json exposes the report path')
+  assert.match(ui, /noteDiagnoseReport/, 'the page shows the report path when it appears')
+  assert.match(ui, /诊断报告已生成，位置/, 'the toast names the exact file')
+  assert.match(vbs, /Function ReportPath/, 'the helper waits for the report path')
+  assert.match(vbs, /Sub ReportAndTell/, 'the helper message names the report file')
+  const diagScript = await readFile(new URL('../tools/diagnose.ps1', import.meta.url), 'utf8')
+  assert.match(diagScript, /last-report\.txt/, 'the self check records where the report went')
+
+  // 2026-10-12 反馈：页面几十秒才出来、点一下有概率又重启一次
+  assert.match(hostHalf, /await delay\(1000\)/, 'graceful close gets 1 second: DSH hides to tray, it never quits on WM_CLOSE')
+  assert.match(hostHalf, /identity = Promise.resolve\(\)/, 'the identity check runs in parallel with the wait, not after it')
+  assert.match(hostHalf, /function warmUpShellDetection/, 'shell detection is warmed up off the startup path')
+  assert.ok(
+    !/^\s+const shell = detectShell\(\)\s*$/m.test(hostHalf.split('warmUpShellDetection()')[0].split('apply(root)').pop() || ''),
+    'the mount path must not run detectShell synchronously',
+  )
+  // 存活判断必须是瞬时的：pidAlive 每次都同步起 PowerShell，会把等待拖成几十秒（实测 30 秒）
+  assert.match(hostHalf, /process\.kill\(pid, 0\)/, 'liveness is checked with process.kill, not by spawning PowerShell')
+  assert.ok(!/if \(!pidAlive\(shellPid\)\)/.test(hostHalf), 'closeShell must never call pidAlive in its wait loop')
+  assert.match(hostHalf, /上一次重启刚发生过/, 'a restart within 90s is refused, so restarts cannot overlap')
+  assert.match(hostHalf, /refusing to force-kill/, 'host verifies the pid still is the shell before force-killing')
+  assert.match(hostHalf, /shellCreated/, 'the shell creation time travels with the restart record')
+  assert.match(vbs, /Function Identified/, 'the helper verifies pid identity before terminating')
+  assert.match(vbs, /is not the shell we were asked to restart/, 'the helper refuses a reused pid')
+  assert.match(vbs, /Function Digits/, 'creation times are compared digits-only, across WMI formats')
+  const psHelper = await readFile(new URL('../lib/relaunch.ps1', import.meta.url), 'utf8')
+  assert.match(psHelper, /function Test-Identified/, 'the PowerShell helper verifies identity too')
 }
 
 // 卸载：所有 disposer 都是函数且可安全调用
