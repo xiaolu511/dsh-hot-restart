@@ -6,7 +6,24 @@
 
 [中文](README.md) | [English](README.en.md)
 
-One fixed button inside the DSH window. Click it and DSH closes and reopens automatically. Right-click it for a built-in self check that writes a single diagnostic report you can send as-is.
+One fixed button inside the DSH window. Click it and DSH closes and reopens automatically. Right-click it for a **built-in self check**.
+
+## Built-in self check
+
+When the button does not work, when DSH closed and never came back, or when installing the plugin broke
+startup - all of that used to need a back-and-forth conversation. Now one click answers it:
+
+- right-click the button, pick the self check; a small progress card shows the current step and the
+  elapsed time, and you get the **full path** of the report when it is done (it opens in Notepad);
+- it also runs by itself when a restart is refused, when the button is greyed out, or when the host
+  notices the previous startup failed; the restart helper runs it too when DSH never came back;
+- by default it **creates no processes at all** (it only reads policy and state), so antivirus does not
+  pop an authorisation dialog and the whole run takes about 9 seconds. Add `-DeepProbe` to
+  `tools\diagnose.cmd` if you want the five dispatch channels tested for real;
+- the report is self-contained: verdicts, the dispatch capability matrix, security context
+  (WSH policy, execution policy, installed AV, Defender controlled folder access and ASR, AppLocker),
+  every DSH process and command line, plugin file hashes, whether the market lock is stuck, the stage
+  the last startup died at, GPU crash count, ports, routes and the full plugin log.
 
 - the button floats above the page and never squeezes your content;
 - solid theme colour with white text, hard to miss;
@@ -20,13 +37,13 @@ Release notes for every version live in [CHANGELOG.md](CHANGELOG.md). There is a
 Published on npm. Use an exact version (a freshly published version is skipped for 24 hours):
 
 ```
-dsh-hot-restart@0.3.14
+dsh-hot-restart@0.3.16
 ```
 
 If that fails, use the GitHub spec. The target machine needs git:
 
 ```
-github:xiaolu511/dsh-hot-restart@0.3.14
+github:xiaolu511/dsh-hot-restart@0.3.16
 ```
 
 For an offline machine, pack a tgz and use a `file:` spec with its absolute path.
@@ -35,7 +52,7 @@ On the desktop client, ask the Agent to run `plugin_manager` and then `install_b
 `web` profile, use the CLI:
 
 ```bash
-dsh plugin --profile web add dsh-hot-restart@0.3.14
+dsh plugin --profile web add dsh-hot-restart@0.3.16
 ```
 
 ### Restart DSH once after installing
@@ -113,7 +130,7 @@ hand over to the host trust fence, so only a local page can trigger them. A bare
 Ask the Agent to run `plugin_manager` and then `remove_bundle` with the target `dsh-hot-restart`, or:
 
 ```bash
-dsh plugin --profile web remove dsh-hot-restart@0.3.14
+dsh plugin --profile web remove dsh-hot-restart@0.3.16
 ```
 
 Then delete `$DSH_HOME/hot-restart/`, which only holds logs and the last restart record.
