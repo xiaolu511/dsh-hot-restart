@@ -10,7 +10,15 @@
 // ============================================================================
 
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { readFile, rm } from 'node:fs/promises'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+// 单测绝不能往用户真实的 restart.log 里写东西：把插件状态目录指到临时目录。
+// 之前没做这件事，测试加载模块时写的 mounted 行混进了 %USERPROFILE%\.dsh\hot-restart\restart.log。
+const sandbox = mkdtempSync(join(tmpdir(), 'dsh-hot-restart-test-'))
+process.env.DSH_HOT_RESTART_HOME = sandbox
 
 const mod = await import(new URL('../lib/index.js', import.meta.url).href)
 const plugin = mod.default
@@ -336,6 +344,14 @@ async function call(path, options) {
   assert.ok(disposers.length > 0, 'disposers registered')
   for (const dispose of disposers) assert.equal(typeof dispose, 'function')
   for (const dispose of disposers) dispose()
+}
+
+// 日志必须落在沙箱状态目录里 —— 不能污染用户真实的 restart.log
+{
+  const sandboxLog = await readFile(join(sandbox, 'restart.log'), 'utf8').catch(() => '')
+  assert.ok(sandboxLog.includes('mounted'), 'plugin log is written into the overridden state dir')
+  assert.ok(sandboxLog.length < 2048, 'log line stays short even with a long parent command')
+  await rm(sandbox, { recursive: true, force: true })
 }
 
 console.log('dsh-hot-restart host-half: all assertions passed')
