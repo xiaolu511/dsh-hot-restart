@@ -10,10 +10,11 @@
 // ============================================================================
 
 import assert from 'node:assert/strict'
-import { readFile, rm } from 'node:fs/promises'
-import { mkdtempSync } from 'node:fs'
+import { readFile, rm, writeFile, mkdir, readdir } from 'node:fs/promises'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { execFileSync } from 'node:child_process'
 
 // 单测绝不能往用户真实的 restart.log 里写东西：把插件状态目录指到临时目录。
 // 之前没做这件事，测试加载模块时写的 mounted 行混进了 %USERPROFILE%\.dsh\hot-restart\restart.log。
@@ -22,6 +23,8 @@ process.env.DSH_HOT_RESTART_HOME = sandbox
 
 const mod = await import(new URL('../lib/index.js', import.meta.url).href)
 const plugin = mod.default
+// 编码金丝雀要拿产品自己的写法写包装脚本，所以直接用同一个函数
+const encodeCanary = mod.__test.writeExplorerWrapper
 
 assert.equal(plugin.name, 'dsh-hot-restart', 'plugin name')
 
@@ -503,6 +506,23 @@ async function call(path, options) {
   assert.match(vbs, /Function Digits/, 'creation times are compared digits-only, across WMI formats')
   const psHelper = await readFile(new URL('../lib/relaunch.ps1', import.meta.url), 'utf8')
   assert.match(psHelper, /function Test-Identified/, 'the PowerShell helper verifies identity too')
+
+  // 2026-10-12 实战（另一台机器、纯净 DSH）：助手拿到乱码 exe 路径 → ABORT，
+  // 宿主却把它当成「助手就绪」，照样关了 DSH —— 表现就是「能关闭但拉不起来」。
+  assert.match(vbs, /helper ready: shellPid=/, 'the VBS helper announces it is ready')
+  assert.match(psHelper, /helper ready: shellPid=/, 'the PowerShell helper announces it is ready too')
+  assert.match(hostHalf, /function helperStatus/, 'host tells ready / abort / started apart')
+  assert.match(hostHalf, /outcome\.abort \|\| abortReason/, 'an abort reason is remembered and surfaced')
+  assert.ok(
+    !/if \(await waitForHelper\(logFile, before, \d+, candidate\.pid\)\)/.test(hostHalf),
+    'never treat "the helper wrote one line" as success again',
+  )
+  // 非 ASCII 路径必须活下来：包装脚本改成 UTF-16LE + BOM
+  //（实测：ASCII 写法会把 新建文件夹 变成 苞圅9，与那位用户的报告一字不差）
+  assert.match(hostHalf, /'\\uFEFF' \+ text, 'utf16le'/, 'the explorer wrapper is written as UTF-16LE with a BOM')
+  assert.ok(!/writeFileSync\(wrapper, text, 'ascii'\)/.test(hostHalf), 'the ASCII wrapper write is gone')
+  const diag = await readFile(new URL('../tools/diagnose.ps1', import.meta.url), 'utf8')
+  assert.match(diag, /Get-Content \$logPath -Encoding UTF8/, 'the report reads restart.log as UTF-8')
 }
 
 // 卸载：所有 disposer 都是函数且可安全调用
@@ -510,6 +530,74 @@ async function call(path, options) {
   assert.ok(disposers.length > 0, 'disposers registered')
   for (const dispose of disposers) assert.equal(typeof dispose, 'function')
   for (const dispose of disposers) dispose()
+}
+
+// —— 编码合同（自动抓住"我又忘了编码"这类错误）--------------------------------
+// 2026-10-12 主人指出：这个项目的编码事故是同一个错误反复犯。所以不再靠记性，
+// 改成三条机器可查的规矩：非 ASCII 的 .ps1 必须带 UTF-8 BOM；.vbs/.cmd 必须纯 ASCII；
+// 跨进程传路径的地方必须**实跑一次中文往返**（下面那条金丝雀）。
+{
+  const scripts = [
+    '../lib/relaunch.ps1',
+    '../lib/relaunch.vbs',
+    '../tools/diagnose.ps1',
+    '../tools/diagnose.cmd',
+    '../tools/restart-dsh.ps1',
+    '../tools/restart-dsh.vbs',
+  ]
+  for (const rel of scripts) {
+    const bytes = readFileSync(new URL(rel, import.meta.url))
+    const hasBom = bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
+    const nonAscii = [...bytes].filter((b) => b > 127).length
+    const name = rel.replace('../', '')
+    if (rel.endsWith('.ps1')) {
+      // PowerShell 5.1 把没有 BOM 的文件按 ANSI 读：里面只要有中文，语法就会被读坏
+      if (nonAscii > 0) assert.ok(hasBom, `${name} contains non-ASCII and must keep its UTF-8 BOM`)
+    } else {
+      // WSH / cmd 按 ANSI 读：.vbs 与 .cmd 必须保持纯 ASCII
+      assert.equal(nonAscii, 0, `${name} must stay pure ASCII`)
+      assert.ok(!hasBom, `${name} must not carry a BOM`)
+    }
+  }
+}
+
+// —— 编码金丝雀：真的写出去、真的跑一遍、真的读回来 -----------------------------
+// 用户那台机器上，包装脚本按 ASCII 写盘，把 `新建文件夹` 毁成了 `苞圅9`，
+// 助手于是拒绝动手、DSH 关闭后再没起来。光看源码是发现不了的：必须实跑。
+{
+  const canary = mkdtempSync(join(tmpdir(), 'dsh-hr-canary-'))
+  const chineseDir = join(canary, '新建文件夹')
+  await mkdir(chineseDir, { recursive: true })
+  const fakeExe = join(chineseDir, 'DeepSeek Harness.exe')
+  writeFileSync(fakeExe, 'x')
+  const resultFile = join(canary, 'result.txt')
+  const probe = join(canary, 'probe.vbs')
+  writeFileSync(probe, [
+    'Option Explicit',
+    'Dim fso, ts',
+    'Set fso = CreateObject("Scripting.FileSystemObject")',
+    `Set ts = fso.CreateTextFile("${resultFile}", True, True)`,
+    'ts.WriteLine "arg1=" & WScript.Arguments(0)',
+    'ts.WriteLine "exists=" & fso.FileExists(WScript.Arguments(0))',
+    'ts.Close',
+    '',
+  ].join('\r\n'), 'ascii')
+
+  const wrapper = encodeCanary([probe, fakeExe])
+  const head = readFileSync(wrapper).subarray(0, 2)
+  assert.deepEqual([...head], [0xff, 0xfe], 'wrapper starts with exactly one UTF-16LE BOM')
+  const third = readFileSync(wrapper).subarray(2, 4)
+  assert.ok(!(third[0] === 0xff && third[1] === 0xfe), 'and not a second BOM right after it')
+
+  execFileSync('wscript.exe', ['//B', wrapper], { timeout: 20000 })
+  await new Promise((resolve) => setTimeout(resolve, 2000))
+  const result = readFileSync(resultFile, 'utf16le')
+  assert.ok(
+    result.includes(`arg1=${fakeExe}`),
+    `a non-ASCII path must survive the wrapper intact (got: ${result.trim()})`,
+  )
+  assert.ok(result.includes('exists=True'), 'the helper must be able to find the exe it was told about')
+  await rm(canary, { recursive: true, force: true })
 }
 
 // 日志必须落在沙箱状态目录里 —— 不能污染用户真实的 restart.log

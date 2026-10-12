@@ -329,26 +329,17 @@ End Function
 WriteLog "helper started: shellPid=" & shellPid & " port=" & portNo & " exe=" & exePath
 
 If Not fso.FileExists(exePath) Then
+  ' Log only, no MsgBox: with the host watching for "helper ready" this abort is
+  ' reported to the user by the host itself, and a modal box here would just hang
+  ' around. A mangled exe path (non-ASCII install folder) lands exactly here.
   WriteLog "ABORT: executable not found: " & exePath
-  MsgBox msgFail & vbCrLf & vbCrLf & "Missing: " & exePath, 48, "dsh-hot-restart"
   WScript.Quit 2
 End If
 
-' 1) normal path: the host half already asked the shell to close.
-'    The host tries WM_CLOSE for 5 seconds and then force-kills, so 10 seconds of
-'    patience here is plenty. This used to be 25 seconds, and when the host's own
-'    kill silently failed (taskkill /PID undefined) every restart took ~56 seconds.
-waited = 0
-Do While Alive(shellPid) And waited < 10000
-  WScript.Sleep 250
-  waited = waited + 250
-Loop
-WriteLog "shell gone after wait: " & (Not Alive(shellPid))
-
-' 1b) cancellation check, before anything destructive happens.
-'     If the host gave up on this restart it deletes the ticket; then we must NOT
-'     force-terminate the shell - otherwise a cancelled restart still closes DSH
-'     25 seconds later, which is exactly the bug that broke a user's install.
+' 0) cancellation check, before the host is allowed to touch anything.
+'    If the host gave up on this restart it deletes the ticket; then we must NOT
+'    force-terminate the shell - otherwise a cancelled restart still closes DSH
+'    25 seconds later, which is exactly the bug that broke a user's install.
 If Not TicketOk() Then
   WriteLog "ABORT: restart ticket missing or stale; leaving DSH untouched"
   WScript.Quit 5
@@ -357,6 +348,22 @@ End If
 On Error Resume Next
 If ticket <> "" Then fso.DeleteFile ticket, True
 On Error GoTo 0
+
+' 0b) We validated the exe, the ticket and the pid: this is the handshake line the
+'     host waits for before it closes DSH. If the host does not see it, it abandons
+'     the restart and leaves DSH running - that is what keeps "closed but never
+'     came back" from ever happening again.
+WriteLog "helper ready: shellPid=" & shellPid & " port=" & portNo
+
+' 1) normal path: the host half already asked the shell to close.
+'    The host tries WM_CLOSE for a second and then force-kills, so 10 seconds of
+'    patience here is plenty.
+waited = 0
+Do While Alive(shellPid) And waited < 10000
+  WScript.Sleep 250
+  waited = waited + 250
+Loop
+WriteLog "shell gone after wait: " & (Not Alive(shellPid))
 
 ' 2) fallback: the host never got to close it, or the close failed.
 '    Children are stopped too: the host half holds the web port, and a leftover

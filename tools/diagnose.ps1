@@ -469,7 +469,10 @@ if (Test-Path $logPath) {
   Note '最后修改' $logItem.LastWriteTime
   Line ''
   try {
-    Get-Content $logPath -ErrorAction Stop | ForEach-Object { Line ("| " + $_) }
+    # ⚠️ 必须按 UTF-8 读：宿主写的是 UTF-8 无 BOM，助手（WSH）写的是 ANSI。
+    #    不指定编码时 PowerShell 5.1 按 ANSI 读，中文路径会变成 `鏂板缓鏂囦欢澶筡` 这类乱码，
+    #    报告看起来像「路径本来就是坏的」，其实只是报告显示错了。
+    Get-Content $logPath -Encoding UTF8 -ErrorAction Stop | ForEach-Object { Line ("| " + $_) }
   } catch { Line "  (读取失败: $($_.Exception.Message))" }
 } else {
   Line '  (没有 restart.log，插件可能从未成功加载过)'
@@ -480,7 +483,7 @@ if (Test-Path $logPath) {
 $envBlock = @()
 $envBlock += 'dsh-hot-restart 诊断报告'
 $envBlock += "生成时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')"
-$envBlock += "报告版本: 自检 v3（对应插件 0.3.11 时代的能力矩阵）"
+$envBlock += "报告版本: 自检 v4（含派发能力矩阵 / 身份核对 / 助手就绪握手）"
 $envBlock += ''
 $envBlock += '=' * 76
 $envBlock += '结论速览（先看这一段）'

@@ -108,9 +108,19 @@ if (-not (Test-Path -LiteralPath $ExePath)) {
   exit 2
 }
 
+# 0) cancellation check, then the handshake line the plugin waits for before it
+#    closes DSH. Without that line the plugin abandons the restart and leaves DSH
+#    running - which is what keeps "closed but never came back" from happening.
+if (-not (Test-Ticket)) {
+  Write-Log "ABORT: restart ticket missing or stale; leaving DSH untouched"
+  exit 5
+}
+if ($Ticket -ne "") {
+  try { Remove-Item -LiteralPath $Ticket -Force -ErrorAction Stop } catch { }
+}
+Write-Log ("helper ready: shellPid={0} port={1}" -f $ShellPid, $Port)
+
 # 1) normal path: the plugin already asked the shell to terminate.
-#    The plugin tries WM_CLOSE for 5 seconds and then force-kills, so 10 seconds here
-#    is plenty (it used to be 25, which made every restart feel like a minute).
 $gone = Wait-Gone $ShellPid 10
 Write-Log ("shell gone after wait: {0}" -f $gone)
 
@@ -157,15 +167,6 @@ function Wait-Instance([int]$TimeoutSeconds) {
     Start-Sleep -Milliseconds 250
   }
   return $false
-}
-
-# 1b) cancellation check, before anything destructive happens
-if (-not (Test-Ticket)) {
-  Write-Log "ABORT: restart ticket missing or stale; leaving DSH untouched"
-  exit 5
-}
-if ($Ticket -ne "") {
-  try { Remove-Item -LiteralPath $Ticket -Force -ErrorAction Stop } catch { }
 }
 
 # 2) fallback: the plugin never got to close it (or the close failed)
