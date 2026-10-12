@@ -17,16 +17,16 @@ Release notes for every version live in [CHANGELOG.md](CHANGELOG.md). There is a
 [beginner guide](小白向指南.md), in Chinese.
 ## Install
 
-Published on npm:
+Published on npm. Use an exact version (a freshly published version is skipped for 24 hours):
 
 ```
-dsh-hot-restart
+dsh-hot-restart@0.3.14
 ```
 
 If that fails, use the GitHub spec. The target machine needs git:
 
 ```
-github:xiaolu511/dsh-hot-restart
+github:xiaolu511/dsh-hot-restart@0.3.14
 ```
 
 For an offline machine, pack a tgz and use a `file:` spec with its absolute path.
@@ -35,7 +35,7 @@ On the desktop client, ask the Agent to run `plugin_manager` and then `install_b
 `web` profile, use the CLI:
 
 ```bash
-dsh plugin --profile web add dsh-hot-restart
+dsh plugin --profile web add dsh-hot-restart@0.3.14
 ```
 
 ### Restart DSH once after installing
@@ -113,7 +113,7 @@ hand over to the host trust fence, so only a local page can trigger them. A bare
 Ask the Agent to run `plugin_manager` and then `remove_bundle` with the target `dsh-hot-restart`, or:
 
 ```bash
-dsh plugin --profile web remove dsh-hot-restart
+dsh plugin --profile web remove dsh-hot-restart@0.3.14
 ```
 
 Then delete `$DSH_HOME/hot-restart/`, which only holds logs and the last restart record.

@@ -16,10 +16,10 @@
 每个版本的改动见 [CHANGELOG.md](CHANGELOG.md)。
 ## 安装
 
-已发布到 npm:
+已发布到 npm。**spec 要带准确版本号** —— 刚发布的版本在 24 小时内会被 DSH 的供应链策略跳过，只写包名会停在旧版本：
 
 ```
-dsh-hot-restart
+dsh-hot-restart@0.3.14
 ```
 
 装不上就换 GitHub 地址，目标机器需要有 git：
