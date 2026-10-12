@@ -208,6 +208,11 @@ async function call(path, options) {
     'helper confirmation happens before the shell is killed',
   )
   assert.match(hostHalf, /已放弃这次重启/, 'host refuses to restart when no helper can run')
+  // 不经过 WMI 的备用派发：借已经跑着的 Explorer 打开包装脚本，跳出 DSH 的 Job。
+  // 起因：某用户机器上 WMI 能建进程、助手手动跑也正常，两者合起来却没动静。
+  assert.match(hostHalf, /dispatchViaExplorer/, 'host has a WMI-free dispatch fallback')
+  assert.match(hostHalf, /helper dispatch \(wmi\)/, 'host logs the exact dispatched command line')
+  assert.match(hostHalf, /wscript-explorer/, 'host records which dispatch route worked')
   assert.match(vbs, /KillChildren/, 'helper also stops leftover children of the shell')
   assert.match(vbs, /Function PortOwner/, 'helper can find whatever still holds the web port')
   assert.match(vbs, /Function IsOurStack/, 'helper only stops processes that belong to our own stack')
