@@ -188,12 +188,25 @@ async function call(path, options) {
   assert.match(vbs, /MSFT_NetTCPConnection/, 'VBS helper waits for the port to be released')
   assert.ok(!/Start-Process/.test(vbs), 'VBS helper never uses a console-inheriting launcher')
 
+  // 「关掉了但没起来」的防线：杀子树、清端口占用者、确认新实例真的起来了、失败要告知用户
+  assert.match(hostHalf, /'\/F', '\/T', '\/PID'/, 'host half kills the whole process tree, not just the shell')
+  assert.match(vbs, /KillChildren/, 'helper also stops leftover children of the shell')
+  assert.match(vbs, /Function PortOwner/, 'helper can find whatever still holds the web port')
+  assert.match(vbs, /Function IsOurStack/, 'helper only stops processes that belong to our own stack')
+  assert.match(vbs, /Function WaitForInstance/, 'helper verifies the new instance actually came up')
+  assert.match(vbs, /ShellExecute/, 'helper has a second launch method before giving up')
+  assert.match(vbs, /MsgBox/, 'helper tells the user if it could not restart DSH')
+
   const ps = await readFile(new URL('../lib/relaunch.ps1', import.meta.url), 'utf8')
   assert.match(ps, /Win32_Process/, 'PowerShell fallback also launches DSH through WMI')
   assert.ok(
     ps.indexOf('Win32_Process') < ps.indexOf('Start-Process -FilePath $ExePath -WorkingDirectory $workDir'),
     'WMI launch is tried before the console-inheriting Start-Process fallback',
   )
+  assert.match(ps, /Stop-Children/, 'PowerShell fallback also stops leftover children')
+  assert.match(ps, /Test-OurStack/, 'PowerShell fallback only stops our own processes')
+  assert.match(ps, /Wait-Instance/, 'PowerShell fallback verifies the new instance')
+  assert.match(ps, /Popup/, 'PowerShell fallback tells the user on failure')
 }
 
 // VBS 助手必须保持纯 ASCII：WSH 按 ANSI 读取 .vbs，UTF-8 中文会吃掉字符串结尾的引号

@@ -77,6 +77,51 @@ if (-not (Test-Path -LiteralPath $ExePath)) {
 $gone = Wait-Gone $ShellPid 25
 Write-Log ("shell gone after wait: {0}" -f $gone)
 
+function Stop-Children([int]$ParentPid) {
+  try {
+    $kids = Get-CimInstance Win32_Process -Filter ("ParentProcessId={0}" -f $ParentPid) -ErrorAction SilentlyContinue
+    foreach ($kid in $kids) {
+      Write-Log ("terminating child pid={0} name={1}" -f $kid.ProcessId, $kid.Name)
+      try { Stop-Process -Id $kid.ProcessId -Force -ErrorAction Stop } catch { }
+    }
+  } catch { }
+}
+
+function Get-PortOwner([int]$PortNumber) {
+  if ($PortNumber -le 0) { return 0 }
+  try {
+    $conn = Get-NetTCPConnection -LocalPort $PortNumber -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($conn) { return [int]$conn.OwningProcess }
+  } catch { }
+  return 0
+}
+
+# Only ever stop something that belongs to our own DSH stack, so we never touch
+# an unrelated process that happens to sit on the port.
+function Test-OurStack([int]$ProcessId) {
+  if ($ProcessId -le 0) { return $false }
+  try {
+    $p = Get-Process -Id $ProcessId -ErrorAction Stop
+    $name = $p.ProcessName.ToLower()
+    if ($name -eq ([System.IO.Path]::GetFileNameWithoutExtension($ExePath)).ToLower()) { return $true }
+    if ($name -eq "node" -or $name -eq "electron") { return $true }
+  } catch { }
+  return $false
+}
+
+function Wait-Instance([int]$TimeoutSeconds) {
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ((Get-Date) -lt $deadline) {
+    try {
+      $running = Get-CimInstance Win32_Process -Filter ("Name='{0}'" -f [System.IO.Path]::GetFileName($ExePath)) -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.ToLower() -eq $ExePath.ToLower() }
+      if ($running) { return $true }
+    } catch { }
+    Start-Sleep -Milliseconds 250
+  }
+  return $false
+}
+
 # 2) fallback: the plugin never got to run taskkill (or it failed)
 if (-not $gone) {
   Write-Log "shell still alive; forcing termination from the helper"
@@ -84,9 +129,13 @@ if (-not $gone) {
   $gone = Wait-Gone $ShellPid 15
   Write-Log ("shell gone after force: {0}" -f $gone)
 }
+# The host half is a child of the shell and holds the web port: if it lingers,
+# the new instance would exit immediately with a bind error.
+Stop-Children $ShellPid
 
 if (-not $gone) {
   Write-Log "ABORT: shell did not exit; not starting a second instance"
+  try { (New-Object -ComObject WScript.Shell).Popup("DSH was closed but could not be restarted automatically. Please start DSH manually.", 0, "dsh-hot-restart", 48) } catch { }
   exit 3
 }
 
@@ -95,6 +144,17 @@ Start-Sleep -Milliseconds 600
 $free = Wait-PortFree $Port 25
 Write-Log ("port free: {0}" -f $free)
 
+# 3b) still busy: stop the leftover of our own stack that holds the port
+if (-not $free) {
+  $owner = Get-PortOwner $Port
+  Write-Log ("port still busy; owner pid={0}" -f $owner)
+  if (Test-OurStack $owner) {
+    try { Stop-Process -Id $owner -Force -ErrorAction Stop; Write-Log ("terminated port holder {0}" -f $owner) } catch { Write-Log ("stopping port holder failed: {0}" -f $_.Exception.Message) }
+    $free = Wait-PortFree $Port 10
+    Write-Log ("port free after stopping owner: {0}" -f $free)
+  }
+}
+
 # 4) relaunch
 #    Use WMI so the new DSH inherits NO console. Plain Start-Process would hand it this
 #    process's console, and on Windows 11 that console is hosted by Windows Terminal -
@@ -102,7 +162,7 @@ Write-Log ("port free: {0}" -f $free)
 $workDir = Split-Path -Parent $ExePath
 Write-Log ("launching: {0} (cwd {1})" -f $ExePath, $workDir)
 $launched = $false
-for ($attempt = 1; $attempt -le 3 -and -not $launched; $attempt++) {
+for ($attempt = 1; $attempt -le 4 -and -not $launched; $attempt++) {
   try {
     $result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
       CommandLine = ('"{0}"' -f $ExePath)
@@ -113,24 +173,26 @@ for ($attempt = 1; $attempt -le 3 -and -not $launched; $attempt++) {
   } catch {
     Write-Log ("create attempt {0} failed: {1}" -f $attempt, $_.Exception.Message)
   }
-  if (-not $launched) { Start-Sleep -Milliseconds 500 }
+  if (-not $launched) { Start-Sleep -Milliseconds 700 }
 }
-if (-not $launched) {
-  # Fallback: this PowerShell has a console, but the helper exits right after, and DSH is a
-  # GUI app - it only keeps that console alive if it inherits it. Accept the trade-off so a
-  # restart never silently fails.
-  try {
-    Start-Process -FilePath $ExePath -WorkingDirectory $workDir
-    $launched = $true
-    Write-Log "fallback Start-Process used"
-  } catch {
-    Write-Log ("LAUNCH FAILED: {0}" -f $_.Exception.Message)
-  }
-}
-if ($launched) {
-  Write-Log "launch issued"
+
+# 5) verify it actually came up, then try the last resort and finally tell the user
+if ($launched -and (Wait-Instance 20)) {
+  Write-Log "new instance is up"
   exit 0
-} else {
-  exit 4
 }
+Write-Log "not up yet; trying Start-Process fallback"
+try {
+  Start-Process -FilePath $ExePath -WorkingDirectory $workDir
+  if (Wait-Instance 15) {
+    Write-Log "new instance is up after Start-Process"
+    exit 0
+  }
+} catch {
+  Write-Log ("fallback Start-Process failed: {0}" -f $_.Exception.Message)
+}
+
+Write-Log "FAILED: could not start DSH automatically"
+try { (New-Object -ComObject WScript.Shell).Popup("DSH was closed but could not be restarted automatically. Please start DSH manually.", 0, "dsh-hot-restart", 48) } catch { }
+exit 4
 
