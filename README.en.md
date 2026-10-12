@@ -6,7 +6,7 @@
 
 [中文](README.md) | [English](README.en.md)
 
-One fixed button inside the DSH window. Click it and DSH closes and reopens automatically.
+One fixed button inside the DSH window. Click it and DSH closes and reopens automatically. Right-click it for a built-in self check that writes a single diagnostic report you can send as-is.
 
 - the button floats above the page and never squeezes your content;
 - solid theme colour with white text, hard to miss;
