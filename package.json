@@ -1,7 +1,7 @@
 {
   "name": "dsh-hot-restart",
   "version": "0.3.14",
-  "description": "DSH 热重启：窗口里一个固定按钮，点一下就把 DSH 关掉并自动重开，全程没有黑窗口",
+  "description": "DSH 热重启插件：窗口里一个固定按钮，点一下关闭并自动重开 DSH，全程没有黑窗口；内置自检系统，出问题点一下就能生成一份可直接定位的诊断报告",
   "keywords": [
     "dsh",
     "dsh-plugin",
