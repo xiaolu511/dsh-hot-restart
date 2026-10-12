@@ -198,6 +198,16 @@ async function call(path, options) {
 
   // 「关掉了但没起来」的防线：杀子树、清端口占用者、确认新实例真的起来了、失败要告知用户
   assert.match(hostHalf, /'\/F', '\/T', '\/PID'/, 'host half kills the whole process tree, not just the shell')
+  // 助手没被确认活着之前，绝不能杀外壳：有用户机器上 WSH 被策略禁用，
+  // wscript 进程静默死亡，结果外壳被关掉而没有任何东西把它拉回来。
+  assert.match(hostHalf, /waitForHelper/, 'host confirms the helper actually runs')
+  assert.match(hostHalf, /helper confirmed/, 'host logs a confirmed helper')
+  assert.ok(
+    hostHalf.indexOf('waitForHelper') > 0
+      && hostHalf.indexOf("spawn('taskkill'") > hostHalf.indexOf('waitForHelper'),
+    'helper confirmation happens before the shell is killed',
+  )
+  assert.match(hostHalf, /已放弃这次重启/, 'host refuses to restart when no helper can run')
   assert.match(vbs, /KillChildren/, 'helper also stops leftover children of the shell')
   assert.match(vbs, /Function PortOwner/, 'helper can find whatever still holds the web port')
   assert.match(vbs, /Function IsOurStack/, 'helper only stops processes that belong to our own stack')
