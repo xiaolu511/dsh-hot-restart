@@ -196,8 +196,18 @@ async function call(path, options) {
   assert.match(vbs, /MSFT_NetTCPConnection/, 'VBS helper waits for the port to be released')
   assert.ok(!/Start-Process/.test(vbs), 'VBS helper never uses a console-inheriting launcher')
 
-  // 「关掉了但没起来」的防线：杀子树、清端口占用者、确认新实例真的起来了、失败要告知用户
-  assert.match(hostHalf, /'\/F', '\/T', '\/PID'/, 'host half kills the whole process tree, not just the shell')
+  // 「关掉了但没起来」的防线：确认助手活着、清端口占用者、确认新实例真的起来了、失败要告知用户
+  // 关外壳的契约（2026-10-12 事故之后定下的）：
+  //   ① 先优雅关闭（taskkill 不带 /F = WM_CLOSE），让 DSH 收尾并释放文件锁；
+  //   ② 绝不加 /T —— 整棵树一起收会杀掉正在写状态的子进程，留下 state.json.lock；
+  //   ③ 只有确认助手活着之后才允许动手。
+  assert.match(hostHalf, /function closeShell/, 'host closes the shell through closeShell')
+  assert.match(hostHalf, /'\/PID'/, 'graceful close without /F comes first')
+  assert.ok(!/'\/T'/.test(hostHalf), 'never kills the whole tree: that breaks DSH state locks')
+  assert.ok(
+    hostHalf.indexOf("run(['/PID'") < hostHalf.indexOf("run(['/F', '/PID'"),
+    'forced kill is only the fallback after a graceful close',
+  )
   // 助手没被确认活着之前，绝不能杀外壳：有用户机器上 WSH 被策略禁用，
   // wscript 进程静默死亡，结果外壳被关掉而没有任何东西把它拉回来。
   assert.match(hostHalf, /waitForHelper/, 'host confirms the helper actually runs')
@@ -208,6 +218,14 @@ async function call(path, options) {
     'helper confirmation happens before the shell is killed',
   )
   assert.match(hostHalf, /已放弃这次重启/, 'host refuses to restart when no helper can run')
+  // 撤销通道：宿主放弃时删凭据，助手没有新鲜凭据就不许动手。
+  // 没有这条通道时，一个已派发的助手会在 25 秒后照样强杀外壳（真实事故）。
+  assert.match(hostHalf, /function issueTicket/, 'host issues a restart ticket')
+  assert.match(hostHalf, /function revokeTicket/, 'host can revoke the restart ticket')
+  assert.match(hostHalf, /revokeTicket\(\)/, 'abandoning a restart revokes the ticket')
+  assert.match(hostHalf, /'-Ticket'/, 'the PowerShell helper receives the ticket path')
+  assert.match(vbs, /Function TicketOk/, 'VBS helper checks the restart ticket before acting')
+  assert.match(vbs, /restart ticket missing or stale/, 'VBS helper aborts on a revoked ticket')
   // 不经过 WMI 的备用派发：借已经跑着的 Explorer 打开包装脚本，跳出 DSH 的 Job。
   // 起因：某用户机器上 WMI 能建进程、助手手动跑也正常，两者合起来却没动静。
   assert.match(hostHalf, /dispatchViaExplorer/, 'host has a WMI-free dispatch fallback')
@@ -373,9 +391,12 @@ async function call(path, options) {
   assert.match(vbsTool, /--check/, 'restart-dsh.vbs has a compile-only switch for tests')
   assert.match(psTool, /\[switch\]\$Check/, 'restart-dsh.ps1 has a check-only switch for tests')
   assert.ok(
-    vbsTool.indexOf('[relaunch]') > 0 && vbsTool.indexOf('.Terminate()') > vbsTool.indexOf('[relaunch]'),
-    'restart-dsh.vbs terminates the shell only after the helper reported',
+    vbsTool.indexOf('[relaunch]') > 0
+      && vbsTool.indexOf('taskkill /PID ') > vbsTool.indexOf('[relaunch]'),
+    'restart-dsh.vbs closes the shell only after the helper reported',
   )
+  assert.match(vbsTool, /taskkill \/F \/PID/, 'restart-dsh.vbs falls back to a forced close only if needed')
+  assert.ok(!/\.Terminate\(\)/.test(vbsTool), 'restart-dsh.vbs never hard-terminates through WMI any more')
 }
 
 // 卸载：所有 disposer 都是函数且可安全调用

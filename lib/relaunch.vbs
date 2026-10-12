@@ -28,7 +28,7 @@
 ' ============================================================================
 Option Explicit
 
-Dim shellPid, exePath, logPath, portNo
+Dim shellPid, exePath, logPath, portNo, ticket
 Dim fso, svc, sh, workDir, waited, ok, owner
 Dim exeName, msgFail
 
@@ -43,6 +43,12 @@ shellPid = CLng(WScript.Arguments(0))
 exePath = WScript.Arguments(1)
 logPath = WScript.Arguments(2)
 portNo = CLng(WScript.Arguments(3))
+' Optional 5th argument: the host's restart ticket. When one is given, the helper
+' must find it fresh before it may terminate anything: a cancelled restart must
+' not be executed 25 seconds later by a stray helper. That mistake cost a user
+' their DSH install on 2026-10-12.
+ticket = ""
+If WScript.Arguments.Count >= 5 Then ticket = "" & WScript.Arguments(4)
 workDir = fso.GetParentFolderName(exePath)
 exeName = fso.GetFileName(exePath)
 
@@ -99,6 +105,21 @@ Sub KillChildren(parentPid)
   End If
   On Error GoTo 0
 End Sub
+
+' The host writes a ticket right before dispatching us and deletes it if it gives
+' up. Fresh ticket = the restart is still wanted; missing or stale = do nothing.
+Function TicketOk()
+  Dim f
+  TicketOk = True
+  If ticket = "" Then Exit Function
+  TicketOk = False
+  On Error Resume Next
+  If fso.FileExists(ticket) Then
+    Set f = fso.GetFile(ticket)
+    If DateDiff("s", f.DateLastModified, Now) < 180 Then TicketOk = True
+  End If
+  On Error GoTo 0
+End Function
 
 ' How many running processes are the very exe we are about to start.
 ' Electron children (renderer, GPU, utility) carry --type= and are NOT a sign
@@ -215,7 +236,7 @@ If Not fso.FileExists(exePath) Then
   WScript.Quit 2
 End If
 
-' 1) normal path: the host half already issued taskkill /T
+' 1) normal path: the host half already asked the shell to close
 waited = 0
 Do While Alive(shellPid) And waited < 25000
   WScript.Sleep 250
@@ -223,7 +244,20 @@ Do While Alive(shellPid) And waited < 25000
 Loop
 WriteLog "shell gone after wait: " & (Not Alive(shellPid))
 
-' 2) fallback: the host never got to kill it, or the kill failed.
+' 1b) cancellation check, before anything destructive happens.
+'     If the host gave up on this restart it deletes the ticket; then we must NOT
+'     force-terminate the shell - otherwise a cancelled restart still closes DSH
+'     25 seconds later, which is exactly the bug that broke a user's install.
+If Not TicketOk() Then
+  WriteLog "ABORT: restart ticket missing or stale; leaving DSH untouched"
+  WScript.Quit 5
+End If
+' Claim it: one ticket authorises exactly one restart.
+On Error Resume Next
+If ticket <> "" Then fso.DeleteFile ticket, True
+On Error GoTo 0
+
+' 2) fallback: the host never got to close it, or the close failed.
 '    Children are stopped too: the host half holds the web port, and a leftover
 '    host makes the new instance exit immediately with a bind error.
 If Alive(shellPid) Then

@@ -25,7 +25,7 @@ Option Explicit
 
 Dim fso, sh, svc, col, item, shellPid, exePath, helper, logPath, profileDir
 Dim cls, rc, helperPid, port, waited, ok, before, sizeNow, txt, stream
-Dim exeName, psHelper, psExe, psLine
+Dim exeName, psHelper, psExe, psLine, ticketPath, ticketFile
 
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set sh = CreateObject("WScript.Shell")
@@ -38,6 +38,17 @@ If WScript.Arguments.Count > 0 Then
 End If
 
 Set svc = GetObject("winmgmts:\\.\root\cimv2")
+
+Function Alive(pid)
+  Dim qq
+  Alive = False
+  On Error Resume Next
+  Set qq = svc.ExecQuery("SELECT ProcessId FROM Win32_Process WHERE ProcessId=" & pid)
+  If IsObject(qq) Then
+    If qq.Count > 0 Then Alive = True
+  End If
+  On Error GoTo 0
+End Function
 
 helper = fso.BuildPath(fso.GetParentFolderName(fso.GetParentFolderName(WScript.ScriptFullName)), "lib\relaunch.vbs")
 If Not fso.FileExists(helper) Then
@@ -78,6 +89,16 @@ On Error Resume Next
 fso.CreateFolder profileDir & "\.dsh\hot-restart"
 On Error GoTo 0
 
+' --- restart ticket: the helper refuses to touch anything without a fresh one --
+' If this tool gives up (helper never reported) it deletes the ticket again, so a
+' stray helper cannot close DSH 25 seconds later.
+ticketPath = profileDir & "\.dsh\hot-restart\restart-ticket.json"
+On Error Resume Next
+Set ticketFile = fso.CreateTextFile(ticketPath, True)
+ticketFile.WriteLine "{""at"":" & CLng(Timer) & "}"
+ticketFile.Close
+On Error GoTo 0
+
 ' --- the web port belongs to the host half, a child of the shell ------------
 port = 0
 On Error Resume Next
@@ -109,7 +130,7 @@ Sub Dispatch(commandLine)
   On Error GoTo 0
 End Sub
 
-Dispatch "wscript.exe //B """ & helper & """ " & shellPid & " """ & exePath & """ """ & logPath & """ " & port
+Dispatch "wscript.exe //B """ & helper & """ " & shellPid & " """ & exePath & """ """ & logPath & """ " & port & " """ & ticketPath & """"
 
 ' --- the helper must prove it is alive before we end the shell --------------
 ok = False
@@ -138,7 +159,7 @@ If Not ok Then
   psHelper = fso.BuildPath(fso.GetParentFolderName(helper), "relaunch.ps1")
   psExe = sh.ExpandEnvironmentStrings("%SystemRoot%") & "\System32\WindowsPowerShell\v1.0\powershell.exe"
   If fso.FileExists(psHelper) And fso.FileExists(psExe) Then
-    psLine = """" & psExe & """ -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & psHelper & """ -ShellPid " & shellPid & " -ExePath """ & exePath & """ -LogPath """ & logPath & """ -Port " & port
+    psLine = """" & psExe & """ -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & psHelper & """ -ShellPid " & shellPid & " -ExePath """ & exePath & """ -LogPath """ & logPath & """ -Port " & port & " -Ticket """ & ticketPath & """"
     Dispatch psLine
     waited = 0
     Do While waited < 8000
@@ -163,19 +184,25 @@ If Not ok Then
 End If
 
 If Not ok Then
+  ' revoke the ticket: a helper that never reported must not act later either
+  On Error Resume Next
+  fso.DeleteFile ticketPath, True
+  On Error GoTo 0
   MsgBox "The relaunch helper did not start, so DSH was left running." & vbCrLf & vbCrLf & _
          "Nothing was closed. Please restart DSH from the tray icon or the Start menu.", 48, "DSH hot restart"
   WScript.Quit 3
 End If
 
-' --- helper is alive: end the old shell, the helper brings DSH back ---------
+' --- helper is alive: ask the shell to close -------------------------------------------------
+' Graceful first: taskkill without /F sends WM_CLOSE, so DSH can flush its state and
+' release its file locks. A hard kill can leave desktop-market/state.json.lock behind,
+' and a lock whose recorded PID later gets reused makes DSH fail every start.
 WScript.Sleep 600
 On Error Resume Next
-Err.Clear
-GetObject("winmgmts:\\.\root\cimv2:Win32_Process.Handle='" & shellPid & "'").Terminate()
-If Err.Number <> 0 Then
-  MsgBox "The helper is ready, but terminating the old process failed (" & Err.Number & ")." & vbCrLf & _
-         "Quit DSH manually and the helper will start a new instance.", 48, "DSH hot restart"
+sh.Run "taskkill /PID " & shellPid, 0, True
+WScript.Sleep 4000
+If Alive(shellPid) Then
+  sh.Run "taskkill /F /PID " & shellPid, 0, True
 End If
 On Error GoTo 0
 

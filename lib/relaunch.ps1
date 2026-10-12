@@ -14,10 +14,22 @@ param(
   [Parameter(Mandatory = $true)][int]$ShellPid,
   [Parameter(Mandatory = $true)][string]$ExePath,
   [string]$LogPath = "",
-  [int]$Port = 0
+  [int]$Port = 0,
+  [string]$Ticket = ""
 )
 
 $ErrorActionPreference = "Continue"
+
+# The host writes a ticket right before dispatching this helper and deletes it when
+# it gives up. A missing or stale ticket means the restart was cancelled: do nothing.
+# Without this, a stray helper force-terminates the shell 25 seconds later anyway.
+function Test-Ticket {
+  if ($Ticket -eq "") { return $true }
+  try {
+    $f = Get-Item -LiteralPath $Ticket -ErrorAction Stop
+    return (((Get-Date) - $f.LastWriteTime).TotalSeconds -lt 180)
+  } catch { return $false }
+}
 
 function Write-Log([string]$Message) {
   $line = "{0} [relaunch] {1}" -f (Get-Date).ToString("o"), $Message
@@ -122,7 +134,16 @@ function Wait-Instance([int]$TimeoutSeconds) {
   return $false
 }
 
-# 2) fallback: the plugin never got to run taskkill (or it failed)
+# 1b) cancellation check, before anything destructive happens
+if (-not (Test-Ticket)) {
+  Write-Log "ABORT: restart ticket missing or stale; leaving DSH untouched"
+  exit 5
+}
+if ($Ticket -ne "") {
+  try { Remove-Item -LiteralPath $Ticket -Force -ErrorAction Stop } catch { }
+}
+
+# 2) fallback: the plugin never got to close it (or the close failed)
 if (-not $gone) {
   Write-Log "shell still alive; forcing termination from the helper"
   try { Stop-Process -Id $ShellPid -Force -ErrorAction Stop } catch { Write-Log ("force stop failed: {0}" -f $_.Exception.Message) }
