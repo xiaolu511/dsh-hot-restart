@@ -57,6 +57,10 @@ If WScript.Arguments.Count >= 7 Then created = "" & WScript.Arguments(6)
 workDir = fso.GetParentFolderName(exePath)
 exeName = fso.GetFileName(exePath)
 
+' Environment snapshot handed to us by the host: we were dispatched through WMI, so
+' our own environment is WmiPrvSE's, not the user's. Load it before launching DSH.
+LoadRelaunchEnv
+
 ' Built with ChrW so this file stays pure ASCII.
 msgFail = "DSH was closed but could not be restarted automatically." & vbCrLf & vbCrLf _
   & ChrW(68) & ChrW(83) & ChrW(72) & ChrW(32) & ChrW(24050) & ChrW(20851) & ChrW(38381) & ChrW(65292) _
@@ -284,6 +288,140 @@ Function IsOurStack(pid)
   On Error GoTo 0
 End Function
 
+' Environment snapshot from the host: UTF-16LE, one NAME=VALUE per line, sitting next
+' to our log file. Loading it is what lets a directly-launched DSH inherit the user's
+' real environment (DSH_HOME, proxies, PATH, ...) instead of WmiPrvSE's.
+Sub LoadRelaunchEnv()
+  Dim envFile, f, line, eq, name, value, loaded
+  loaded = 0
+  envFile = fso.BuildPath(fso.GetParentFolderName(logPath), "relaunch-env.txt")
+  On Error Resume Next
+  If Not fso.FileExists(envFile) Then
+    WriteLog "env snapshot not found: " & envFile
+    Exit Sub
+  End If
+  Set f = fso.OpenTextFile(envFile, 1, False, -1)
+  Do While Not f.AtEndOfStream
+    line = f.ReadLine
+    eq = InStr(line, "=")
+    If eq > 1 Then
+      name = Left(line, eq - 1)
+      value = Mid(line, eq + 1)
+      sh.Environment("PROCESS")(name) = value
+      loaded = loaded + 1
+    End If
+  Loop
+  f.Close
+  On Error GoTo 0
+  WriteLog "env snapshot loaded: " & loaded & " vars"
+End Sub
+
+' The exact command line to bring DSH back.
+' It reuses **the arguments the shell was actually started with** - taken from WMI,
+' not re-invented. Without this, flags like --no-sandbox or a custom --user-data-dir
+' silently disappear on every restart (three other restart plugins do this; we did not).
+' Only the executable token is replaced; the rest is passed through verbatim, so no
+' re-quoting is involved.
+Function RelaunchCommand()
+  Dim q, p, cmd, rest, i, ch, started
+  RelaunchCommand = """" & exePath & """"
+  cmd = ""
+  On Error Resume Next
+  Set q = svc.ExecQuery("SELECT CommandLine FROM Win32_Process WHERE ProcessId=" & shellPid)
+  If IsObject(q) Then
+    For Each p In q
+      cmd = "" & p.CommandLine
+    Next
+  End If
+  On Error GoTo 0
+  cmd = Trim(cmd)
+  If cmd = "" Then Exit Function
+  ' strip the first token: quoted ("...exe") or bare up to the first space
+  rest = ""
+  If Left(cmd, 1) = """" Then
+    started = False
+    For i = 2 To Len(cmd)
+      ch = Mid(cmd, i, 1)
+      If ch = """" Then
+        rest = Trim(Mid(cmd, i + 1))
+        started = True
+        Exit For
+      End If
+    Next
+    If Not started Then rest = ""
+  Else
+    For i = 1 To Len(cmd)
+      ch = Mid(cmd, i, 1)
+      If ch = " " Then
+        rest = Trim(Mid(cmd, i + 1))
+        Exit For
+      End If
+    Next
+  End If
+  If rest <> "" Then RelaunchCommand = """" & exePath & """ " & rest
+End Function
+
+' Start DSH from this process: no console window (wscript has none) and the
+' environment snapshot we loaded is inherited by the child.
+Function LaunchDirect()
+  Dim cmd
+  LaunchDirect = False
+  cmd = RelaunchCommand()
+  WriteLog "direct launch: " & cmd
+  On Error Resume Next
+  sh.CurrentDirectory = workDir
+  sh.Run cmd, 0, False
+  If Err.Number = 0 Then LaunchDirect = True
+  If Err.Number <> 0 Then WriteLog "direct launch failed: " & Err.Number & " " & Err.Description
+  On Error GoTo 0
+End Function
+
+' NOTE about the window (measured 2026-10-13): window-watch2.log said "it comes up by
+' itself, visible and foreground" - that was WRONG, an instrument bug: it looked for the
+' window through Process.MainWindowHandle, which is 0 for a window that has never been
+' shown, so it could only ever see the moment the user's tray click made the window
+' visible. window-watch3.log fixed that by enumerating all top-level windows (hidden ones
+' included) and shows what really happens:
+'
+'   13:17:33  direct launch
+'   13:17:34  hwnd=722472 HIDDEN class=Chrome_WidgetWin_1   <- window exists, hidden
+'   13:17:45  still HIDDEN
+'   13:17:56  visible                                        <- only after a tray click
+'
+' So the shell creates its main window about a second after launch and keeps it hidden.
+' ShowMainWindow (below, calling show-window.ps1) shows it right after the launch.
+
+' Show the DSH main window once its page is painted.
+' Showing a hidden window needs no foreground rights, so a background process can do it.
+' Fire and forget: if it is blocked (antivirus, policy) the restart is unaffected and the
+' user can still reach the window through the tray.
+Sub ShowMainWindow()
+  Dim script, psExe, cmd, startup, proc, showPid, rc
+  On Error Resume Next
+  script = fso.BuildPath(fso.GetParentFolderName(WScript.ScriptFullName), "show-window.ps1")
+  If Not fso.FileExists(script) Then
+    WriteLog "show skipped: " & script & " not found"
+    Exit Sub
+  End If
+  psExe = sh.ExpandEnvironmentStrings("%SystemRoot%") & "\System32\WindowsPowerShell\v1.0\powershell.exe"
+  cmd = """" & psExe & """ -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & script & """"
+  ' Launch through WMI with ShowWindow = 0. Two reasons:
+  '   1. a console program started with sh.Run can flash a white console window for a
+  '      moment, and the user reads that as a bug (they reported exactly that);
+  '   2. a WMI-created process is outside DSH's job, so it survives whatever happens next.
+  Set startup = svc.Get("Win32_ProcessStartup").SpawnInstance_()
+  startup.ShowWindow = 0
+  Set proc = svc.Get("Win32_Process")
+  showPid = 0
+  rc = proc.Create(cmd, workDir, startup, showPid)
+  If Err.Number <> 0 Then
+    WriteLog "show dispatch failed: " & Err.Number & " " & Err.Description
+  Else
+    WriteLog "show window dispatched rc=" & rc & " pid=" & showPid
+  End If
+  On Error GoTo 0
+End Sub
+
 Function LaunchViaWmi()
   Dim cls, rc, newPid, attempt
   LaunchViaWmi = False
@@ -296,7 +434,7 @@ Function LaunchViaWmi()
     ' NOTE: Win32_Process.Create returns a uint32 return code and fills the
     ' ByRef ProcessId - it does NOT return an object (assigning it with Set
     ' fails with "Object required", 424).
-    rc = cls.Create("""" & exePath & """", workDir, Null, newPid)
+    rc = cls.Create(RelaunchCommand(), workDir, Null, newPid)
     If Err.Number = 0 Then
       WriteLog "create attempt " & attempt & " rc=" & rc & " pid=" & newPid
       If rc = 0 Then
@@ -419,9 +557,27 @@ If PortBusy(portNo) Then
   End If
 End If
 
-' 4) start DSH through WMI: parent is WmiPrvSE, no console is inherited
-ok = LaunchViaWmi()
-If ok Then WriteLog "launch issued"
+' 4) launch DSH.
+'    Order matters: try a **direct run from this wscript process** first.
+'    wscript has no console, and it carries the environment snapshot the host handed
+'    us - so the new DSH inherits the user's real environment (DSH_HOME, proxies,
+'    PATH, ...) instead of WmiPrvSE's.
+'    WMI is kept as the fallback: it is how DSH used to be started here, and it still
+'    works when the direct run is blocked.
+
+
+
+ok = LaunchDirect()
+If ok Then WriteLog "launch issued (direct)"
+' Show the real window only once its page is painted (show-window.ps1 waits for the real
+' title). Fired here, in parallel with the checks below.
+If ok Then ShowMainWindow
+If Not WaitForInstance(20000) Then
+  WriteLog "direct launch did not come up; trying WMI"
+  ok = LaunchViaWmi()
+  If ok Then WriteLog "launch issued (wmi)"
+  If ok Then ShowMainWindow
+End If
 
 ' 5) verify it really came up, then fall back to other launch methods
 If WaitForInstance(20000) Then

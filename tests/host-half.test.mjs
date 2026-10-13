@@ -529,6 +529,44 @@ async function call(path, options) {
   const diag = await readFile(new URL('../tools/diagnose.ps1', import.meta.url), 'utf8')
   assert.match(diag, /Get-Content \$logPath -Encoding UTF8/, 'the report reads restart.log as UTF-8')
 
+  // 2026-10-13：读完 13 个同类插件源码后补的三条
+  // ① 环境快照（WMI 派发的助手拿到的是 WmiPrvSE 的环境，不是用户的）
+  assert.match(hostHalf, /function writeRelaunchEnv/, 'host writes an environment snapshot for the helper')
+  assert.match(hostHalf, /'relaunch-env\.txt'/, 'the snapshot has a fixed name next to the log')
+  assert.match(hostHalf, /TOKEN\|SECRET\|PASSWORD/, 'secrets are never copied into the snapshot')
+  assert.match(vbs, /Sub LoadRelaunchEnv/, 'the helper loads the snapshot')
+  assert.match(vbs, /Environment\("PROCESS"\)/, 'the helper sets the vars in its own process')
+  assert.match(vbs, /OpenTextFile\(envFile, 1, False, -1\)/, 'the snapshot is read as UTF-16, matching the writer')
+  // ② 还原外壳的原始命令行（别把 --no-sandbox / 自定义 user-data-dir 丢掉）
+  // 2026-10-13：窗口是"藏着启动"的（window-watch3.log 实测），必须主动 ShowWindow
+  assert.ok(!/StartWaitPanel|wait-panel/.test(vbs), 'no waiting panel any more: the user asked for nothing on screen')
+  assert.match(vbs, /Sub ShowMainWindow/, 'the helper shows the main window after launching')
+  assert.match(vbs, /show-window\.ps1/, 'it calls the window shower')
+  const shower = await readFile(new URL('../lib/show-window.ps1', import.meta.url), 'utf8')
+  assert.match(shower, /IsIconic/, 'the shower backs off if the user minimised the window themselves')
+    assert.match(shower, /EnumWindows/, 'the shower enumerates top-level windows')
+assert.ok(
+    !shower.split(/\r?\n/).some((line) => !/^\s*#/.test(line) && /MainWindowHandle/.test(line)),
+    'no live code may use MainWindowHandle: it is 0 for a never-shown window (the bug that made two earlier attempts no-ops)',
+  )
+  assert.match(shower, /ShowWindow/, 'it actually shows the hidden window')
+  assert.ok(!/[\u4e00-\u9fa5]/.test(shower), 'the shower stays pure ASCII (no BOM needed)')
+  assert.ok(
+    vbs.indexOf('ShowMainWindow') < vbs.indexOf('WaitForInstance(20000)'),
+    'the window is shown right after the launch, not 12 seconds later',
+  )
+  assert.match(vbs, /Function RelaunchCommand/, 'the helper rebuilds the shell command line')
+  assert.match(vbs, /SELECT CommandLine FROM Win32_Process/, 'the command line comes from WMI, not from guessing')
+  assert.match(vbs, /cls\.Create\(RelaunchCommand\(\)/, 'the WMI launch uses that command line too')
+  // ③ 直接拉起优先、WMI 兜底（wscript 无控制台 + 带着正确环境）
+  
+  assert.match(vbs, /Function LaunchDirect/, 'the helper can launch DSH directly')
+  assert.match(vbs, /sh\.Run cmd, 0, False/, 'the direct launch is windowless')
+  assert.ok(
+    vbs.indexOf('ok = LaunchDirect()') < vbs.indexOf('ok = LaunchViaWmi()'),
+    'the direct launch is tried before the WMI fallback',
+  )
+
   // 自检进度 + 默认不起进程（2026-10-12：杀软会拦进程创建，探针实测能磨二十多秒）
   assert.match(diag, /\[switch\]\$DeepProbe/, 'the five real probes are opt-in only')
   assert.match(diag, /function Show-SecurityContext/, 'default mode explains blockers by reading policy')
@@ -546,6 +584,20 @@ async function call(path, options) {
   assert.match(uiSrc2, /自检好像被拦住了/, 'a stuck run says so instead of spinning forever')
   assert.match(uiSrc2, /diagnose\/cancel/, 'the cancel button calls the host route')
   assert.match(uiSrc2, /payload\.diagnoseProgress/, 'the page polls the progress from status.json')
+
+  // 2026-10-13：启动那 10 秒要有东西看（窗口一建好就显示 + 页面自己铺一层"正在启动"）
+  assert.match(uiSrc2, /function showStartupCard/, 'the page paints its own startup card while DSH boots')
+  assert.match(uiSrc2, /dsh-hr-startup/, 'the startup card has a stable id')
+  assert.match(uiSrc2, /appLooksReady/, 'it only removes the card once the app really painted')
+  assert.match(uiSrc2, /45000/, 'and it never sticks around longer than 45 seconds')
+  assert.match(uiSrc2, /watchStartupCard\(\)/, 'boot actually starts the watcher')
+  // 抢焦点的两招已删除（window-watch2.log 三次重启实测：新窗口本来就是可见 + 前台）
+  assert.ok(!/askForForeground/.test(uiSrc2), 'the page no longer fights for focus')
+  assert.ok(!/Sub RaiseWindow/.test(vbs) && !/^\s*RaiseWindow\s*$/m.test(vbs), 'the helper no longer raises the window (only a comment about it remains)')
+  assert.ok(!/focus\\(\\)/.test(uiSrc2), 'no focus() call is left in the page half')
+
+  // 2026-10-13：重启后窗口不会自己到前台（外壳只 show() 不 focus()，且 skipTaskbar:true）
+  
 }
 
 // 卸载：所有 disposer 都是函数且可安全调用
