@@ -144,5 +144,6 @@ Then delete `$DSH_HOME/hot-restart/`, which only holds logs and the last restart
 - Do not start DSH by typing a command in a console. DSH then hangs off that console, and closing
   the window kills DSH. This is Windows behaviour, not something this plugin causes. Starting DSH
   from a Start Menu shortcut, by double-clicking the exe, or through this plugin's restart tools is fine.
-- The button position is hard-coded to the bottom-left of the main area. To move it, edit the `left`
-  and `bottom` lines of `#dsh-hr-btn` in `lib/ui.js`.
+- Position: bottom-left of the main area on a plain Web page; on the Windows desktop shell it moves to
+  the top-right, immediately left of the minimise button (centred in the 40px caption row, and back to
+  the bottom-left in fullscreen). To change it, edit `left`/`bottom`/`right` on `#dsh-hr-btn` in `lib/ui.js`.

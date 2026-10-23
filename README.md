@@ -137,4 +137,5 @@ dsh plugin --profile web remove dsh-hot-restart
 - 重启是强制的。正在生成或执行工具的任务会被中断，会话与项目文件都已落盘，重开后可以继续。
 - 别用「在控制台里敲命令」的方式启动 DSH：那样 DSH 会挂在那条命令行的控制台上，关掉那个窗口 DSH 也会死。
   这是 Windows 的行为，不是插件造成的。用开始菜单快捷方式、双击 exe 或本插件的重启工具都没这个问题。
-- 按钮位置写死在主区域左下角。想换位置就改 `lib/ui.js` 里 `#dsh-hr-btn` 的 `left` 和 `bottom`。
+- 按钮位置：普通 Web 页面在主区域左下角；Windows 桌面壳里自动放到**右上角、最小化按钮左边**
+  （40px 标题栏内居中，全屏时退回左下角）。想改就改 `lib/ui.js` 里 `#dsh-hr-btn` 的 `left`/`bottom`/`right`。
