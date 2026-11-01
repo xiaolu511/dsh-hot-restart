@@ -433,6 +433,18 @@ async function call(path, options) {
       { exe: 'C:\\y\\host.exe', marker: false },
       'parent-unrecognized',
     ],
+    // 路径里带 dsh 字样的普通工具进程（dsh-ops 自带的 timeout.exe 就长这样）不能被当成外壳：
+    // 2026-11-01 之前拿整条路径匹配 /dsh/，这里 fail-closed 直接失效，所以只认 basename。
+    [
+      'tool inside a dsh-named path',
+      {
+        name: 'timeout.exe',
+        exe: 'C:/Users/x/.dsh/profiles/desktop/node_modules/@dsh-ops/bash-win32-x64/usr/bin/timeout.exe',
+        command: 'timeout 120 node host-half.test.mjs',
+      },
+      { exe: 'C:/Program Files/nodejs/node.exe', marker: false },
+      'parent-unrecognized',
+    ],
   ]
   for (const [label, parent, host, expected] of cases) {
     assert.equal(classify(parent, host), expected, `shell verdict for ${label}`)
