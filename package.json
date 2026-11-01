@@ -30,6 +30,12 @@
     "url": "https://github.com/xiaolu511/dsh-hot-restart/issues"
   },
   "author": "xiaolu511",
+  "contributors": [
+    {
+      "name": "xiangjian9998",
+      "url": "https://github.com/xiangjian9998"
+    }
+  ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

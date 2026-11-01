@@ -147,3 +147,9 @@ Then delete `$DSH_HOME/hot-restart/`, which only holds logs and the last restart
 - Position: bottom-left of the main area on a plain Web page; on the Windows desktop shell it moves to
   the top-right, immediately left of the minimise button (centred in the 40px caption row, and back to
   the bottom-left in fullscreen). To change it, edit `left`/`bottom`/`right` on `#dsh-hr-btn` in `lib/ui.js`.
+
+## Thanks
+
+- [@xiangjian9998](https://github.com/xiangjian9998): moved the button from the bottom-left of the main
+  area into the Windows title bar, immediately left of the minimise button
+  ([PR #3](https://github.com/xiaolu511/dsh-hot-restart/pull/3))
