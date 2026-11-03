@@ -56,7 +56,7 @@ github:xiaolu511/dsh-hot-restart
 dsh plugin --profile web add dsh-hot-restart
 ```
 
-### ！！装完要手动重启一次！！ DSH
+### ！！装完要手动重启一次DSH！！
 
 两个原因，都得靠一次真实的进程重启解决：
 
